@@ -35,10 +35,11 @@ beforeAll(async () => {
 afterAll(() => { server.closeAllConnections(); server.close(); });
 
 const noContents: SearchProvider = { async search() { return []; }, async contents() { return null; } };
+const local = { allowPrivateHosts: true }; // the fixture server is on 127.0.0.1
 
 it("returns the paragraphs most related to focus from HTML", async () => {
   const ctx = newTurnContext();
-  const out = await fetchTool(noContents).run({ url: `${base}/pricing`, focus: "Launch plan price per month" }, ctx);
+  const out = await fetchTool(noContents, local).run({ url: `${base}/pricing`, focus: "Launch plan price per month" }, ctx);
   expect(out.isError).toBeFalsy();
   expect(out.content).toContain("The Launch plan costs $24 per month");
   expect(out.content).toContain("## Launch");
@@ -49,29 +50,29 @@ it("returns the paragraphs most related to focus from HTML", async () => {
 it("registers the fetched page as a numbered source", async () => {
   const ctx = newTurnContext();
   ctx.sources.push({ id: 1, title: "x", url: "https://x.com", publishedDate: null });
-  const out = await fetchTool(noContents).run({ url: `${base}/pricing`, focus: "launch price" }, ctx);
+  const out = await fetchTool(noContents, local).run({ url: `${base}/pricing`, focus: "launch price" }, ctx);
   expect(ctx.sources[1]).toMatchObject({ id: 2, url: `${base}/pricing`, title: "Neon Pricing" });
   expect(out.content).toContain("[2]");
 });
 
 it("extracts text from a PDF", async () => {
-  const out = await fetchTool(noContents).run({ url: `${base}/doc.pdf`, focus: "pro plan price" }, newTurnContext());
+  const out = await fetchTool(noContents, local).run({ url: `${base}/doc.pdf`, focus: "pro plan price" }, newTurnContext());
   expect(out.content).toContain("Pro plan costs $25 per month");
 });
 
 it("errors on non-http URLs without throwing", async () => {
-  const out = await fetchTool(noContents).run({ url: "file:///etc/passwd", focus: "x" }, newTurnContext());
+  const out = await fetchTool(noContents, local).run({ url: "file:///etc/passwd", focus: "x" }, newTurnContext());
   expect(out.isError).toBe(true);
 });
 
 it("errors on unsupported binary content types", async () => {
-  const out = await fetchTool(noContents).run({ url: `${base}/image.png`, focus: "x" }, newTurnContext());
+  const out = await fetchTool(noContents, local).run({ url: `${base}/image.png`, focus: "x" }, newTurnContext());
   expect(out.isError).toBe(true);
   expect(out.content).toMatch(/image\/png/);
 });
 
 it("errors on timeout without throwing", async () => {
-  const out = await fetchTool(noContents, { timeoutMs: 200 }).run({ url: `${base}/hang`, focus: "x" }, newTurnContext());
+  const out = await fetchTool(noContents, { ...local, timeoutMs: 200 }).run({ url: `${base}/hang`, focus: "x" }, newTurnContext());
   expect(out.isError).toBe(true);
 });
 
@@ -80,20 +81,20 @@ it("falls back to provider.contents when the page is near-empty", async () => {
     async search() { return []; },
     async contents() { return { text: "Rendered by JS.\n\nThe Team plan costs $599 per month.", publishedDate: "2026-11-07T00:00:00Z" }; },
   };
-  const out = await fetchTool(provider).run({ url: `${base}/empty`, focus: "team plan price" }, newTurnContext());
+  const out = await fetchTool(provider, local).run({ url: `${base}/empty`, focus: "team plan price" }, newTurnContext());
   expect(out.content).toContain("The Team plan costs $599 per month.");
   expect(out.content).toContain("date: 2026-11-07");
 });
 
 it("falls back to provider.contents when the site refuses the fetch", async () => {
   const provider: SearchProvider = { async search() { return []; }, async contents() { return { text: "Enterprise is custom priced." }; } };
-  const out = await fetchTool(provider).run({ url: `${base}/forbidden`, focus: "enterprise price" }, newTurnContext());
+  const out = await fetchTool(provider, local).run({ url: `${base}/forbidden`, focus: "enterprise price" }, newTurnContext());
   expect(out.content).toContain("Enterprise is custom priced.");
 });
 
 it("serves the second fetch of the same URL from cache", async () => {
   hits = {};
-  const tool = fetchTool(noContents);
+  const tool = fetchTool(noContents, local);
   await tool.run({ url: `${base}/pricing`, focus: "launch" }, newTurnContext());
   const second = await tool.run({ url: `${base}/pricing`, focus: "scale plan" }, newTurnContext());
   expect(hits["/pricing"]).toBe(1);
@@ -103,7 +104,7 @@ it("serves the second fetch of the same URL from cache", async () => {
 it("returns an error result past the cap", async () => {
   const ctx = newTurnContext();
   ctx.fetchCalls = 4;
-  const out = await fetchTool(noContents).run({ url: `${base}/pricing`, focus: "x" }, ctx);
+  const out = await fetchTool(noContents, local).run({ url: `${base}/pricing`, focus: "x" }, ctx);
   expect(out).toMatchObject({ isError: true });
   expect(out.content).toContain("Fetch cap reached");
 });
@@ -124,4 +125,32 @@ it("pdfToParagraphs chunks long pages into bounded paragraphs", async () => {
   const paras = await pdfToParagraphs(makePdf(lines));
   expect(paras.length).toBeGreaterThan(2);
   for (const p of paras) expect(p.text.length).toBeLessThanOrEqual(900);
+});
+
+const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
+
+it("refuses loopback, private and link-local hosts by default", async () => {
+  const tool = fetchTool(noContents);
+  for (const url of [`${base}/pricing`, "http://localhost:9/x", "http://169.254.169.254/latest/meta-data", "http://[::1]/"]) {
+    const out = await tool.run({ url, focus: "x" }, newTurnContext());
+    expect(out.isError, url).toBe(true);
+    expect(out.content, url).toMatch(/private|local/i);
+  }
+  const viaDns = fetchTool(noContents, { lookup: async () => [{ address: "10.0.0.5", family: 4 }] });
+  expect((await viaDns.run({ url: "http://intranet.example/", focus: "x" }, newTurnContext())).isError).toBe(true);
+});
+
+it("re-checks every redirect hop", async () => {
+  const fetchImpl = (async () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest" } })) as typeof fetch;
+  const out = await fetchTool(noContents, { fetchImpl, lookup: publicDns }).run({ url: "https://vendor.example/pricing", focus: "x" }, newTurnContext());
+  expect(out.isError).toBe(true);
+  expect(out.content).toMatch(/private|local/i);
+});
+
+it("stops reading a body larger than the byte cap even without content-length", async () => {
+  const big = new ReadableStream({ start(c) { for (let i = 0; i < 50; i++) c.enqueue(new TextEncoder().encode("<p>" + "x".repeat(1000) + "</p>")); c.close(); } });
+  const fetchImpl = (async () => new Response(big, { headers: { "content-type": "text/html" } })) as typeof fetch;
+  const out = await fetchTool(noContents, { fetchImpl, lookup: publicDns, maxBytes: 10_000 }).run({ url: "https://vendor.example/", focus: "x" }, newTurnContext());
+  expect(out.isError).toBe(true);
+  expect(out.content).toMatch(/larger than/);
 });

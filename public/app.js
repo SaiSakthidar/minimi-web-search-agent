@@ -203,7 +203,7 @@ async function openSession(id) {
   let pendingRecall = null;
   let n = 0;
   for (const m of msgs) {
-    if (m.msg.role === "system" && m.msg.text.startsWith("[Memory recall")) pendingRecall = m.msg.text;
+    if (m.msg.role === "system" && m.msg.text.startsWith("[Memory recall")) pendingRecall = m.msg.text; // follows its user message
     else if (m.msg.role === "user") {
       const text = m.msg.parts.filter((p) => p.type === "text").map((p) => p.text).join("");
       if (text) thread.append(el("div", { class: "user" }, text));

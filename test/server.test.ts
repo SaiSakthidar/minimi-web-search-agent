@@ -11,6 +11,7 @@ import { MemoryStore } from "../src/memory/store.ts";
 import { createApp } from "../src/server.ts";
 import type { SearchProvider } from "../src/tools/types.ts";
 import { fakeProvider, type Scripted } from "./helpers/fakeProvider.ts";
+import { wireViolations } from "./helpers/wireRules.ts";
 
 let dir: string;
 let server: Server;
@@ -78,7 +79,7 @@ it("a turn streams text and done, and persists user + assistant messages", async
   expect(sources).toEqual([{ id: 1, title: "Neon pricing", url: "https://neon.tech/pricing", publishedDate: "2026-11-07" }]);
 
   const msgs = await (await fetch(`${base}/api/sessions/${session.id}/messages`)).json();
-  expect(msgs.map((m: any) => m.msg.role)).toEqual(["system", "user", "assistant", "user", "assistant"]);
+  expect(msgs.map((m: any) => m.msg.role)).toEqual(["user", "system", "assistant", "user", "assistant"]);
   expect(msgs.every((m: any) => m.msg.raw === undefined)).toBe(true);
   expect(msgs.at(-1).meta).toMatchObject({ text: "Neon Launch is $24/mo [1].", sources });
 
@@ -109,11 +110,42 @@ it("only cited sources are sent", async () => {
   expect(events.find((e) => e.event === "sources")!.data.sources).toEqual([]);
 });
 
-it("a provider failure becomes an SSE error event", async () => {
-  await start([{ error: new Error("upstream 503") }]);
+it("a provider failure becomes an SSE error event and leaves a replayable transcript", async () => {
+  const provider = await start([
+    { error: new Error("upstream 503") },
+    { text: "Hello again." },
+    { json: { title: "Greeting", topics: [], claims: [] } },
+  ]);
   const session = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
   const { events } = await sse(`/api/sessions/${session.id}/turn`, { text: "hello" });
   expect(events.at(-1)).toMatchObject({ event: "error", data: { message: expect.stringContaining("upstream 503") } });
+  const msgs = await (await fetch(`${base}/api/sessions/${session.id}/messages`)).json();
+  expect(msgs.at(-1).msg.role).toBe("assistant");
+
+  await sse(`/api/sessions/${session.id}/turn`, { text: "hello?" });
+  for (const call of provider.calls) expect(wireViolations(call.messages)).toEqual([]);
+  await awaitExtractions();
+  expect(store.getSession(session.id)?.title).toBe("Greeting"); // the retry still counts as the first real turn
+});
+
+it("every request over a multi-turn, multi-round session obeys the wire rules", async () => {
+  const provider = await start([
+    { toolCalls: [{ name: "web_search", input: { query: "a" } }] },
+    { text: "A [1]." },
+    { json: { title: "t", topics: [], claims: [] } },
+    { toolCalls: [{ name: "web_search", input: { query: "b" } }] },
+    { toolCalls: [{ name: "web_search", input: { query: "c" } }] },
+    { toolCalls: [{ name: "web_search", input: { query: "d" } }] },
+    { text: "Out of rounds.", toolCalls: [{ name: "web_search", input: { query: "e" } }] },
+    { json: { title: "", topics: [], claims: [] } },
+    { stop: "refusal" },
+    { text: "ok" },
+    { json: { title: "", topics: [], claims: [] } },
+  ]);
+  const session = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+  for (const text of ["first", "second", "third", "fourth"]) await sse(`/api/sessions/${session.id}/turn`, { text });
+  expect(provider.calls.length).toBe(8);
+  for (const call of provider.calls) expect(wireViolations(call.messages)).toEqual([]);
 });
 
 it("rejects an empty message and an unknown session", async () => {

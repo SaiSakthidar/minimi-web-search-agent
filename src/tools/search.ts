@@ -54,7 +54,7 @@ export function searchTool(provider: SearchProvider): ToolHandler {
         properties: {
           query: { type: "string", description: "Short search query. Start broad, then narrow." },
           publishedAfter: { type: "string", description: "YYYY-MM-DD; only results published after this" },
-          numResults: { type: "integer", minimum: 3, maximum: 10 },
+          numResults: { type: "integer", description: "How many results, 3 to 10 (default 8)" },
         },
         required: ["query"],
         additionalProperties: false,

@@ -103,7 +103,8 @@ export async function runTurn(opts: {
     const calls: ToolCallPart[] = [];
     let stop: string = "end";
     let raw: Extract<Msg, { role: "assistant" }>["raw"];
-    for await (const ev of provider.stream({ system: opts.system, messages, tools: last ? [] : opts.tools.map((t) => t.spec), effort: opts.effort, signal: opts.signal })) {
+    // The tool set stays the same on the last round: changing it would invalidate earlier thinking. The note says stop.
+    for await (const ev of provider.stream({ system: opts.system, messages, tools: opts.tools.map((t) => t.spec), effort: opts.effort, signal: opts.signal })) {
       if (ev.type === "text") gate.push(ev.delta);
       else if (ev.type === "tool_call") calls.push({ type: "tool_call", id: ev.id, name: ev.name, input: ev.input });
       else { stop = ev.stop; raw = ev.raw; }
@@ -111,16 +112,19 @@ export async function runTurn(opts: {
     const text = gate.flush();
     if (text) fullText = fullText && !/\s$/.test(fullText) ? `${fullText}\n\n${text}` : fullText + text;
 
+    const notice = stop === "max_tokens" ? "The answer was cut short." : stop === "refusal" ? "The model declined to answer this." : null;
+    // Calls that will not be answered (cut off, refused, or past the last round) must not enter the transcript,
+    // and neither may the provider-native content that holds them.
+    const unanswered = calls.length > 0 && (notice !== null || last);
     const textParts: TextPart[] = text ? [{ type: "text", text }] : [];
-    if (last && calls.length) {
-      // Tools were withdrawn for this round; unanswered calls (and the raw that holds them) must not enter the transcript.
-      append({ role: "assistant", parts: textParts });
+    const parts = unanswered ? textParts : [...textParts, ...calls];
+    if (parts.length === 0) {
+      append({ role: "assistant", parts: [{ type: "text", text: notice ?? "(no answer)" }] }); // never replay an empty turn
     } else {
-      append({ role: "assistant", parts: [...textParts, ...calls], ...(raw ? { raw } : {}) });
+      append({ role: "assistant", parts, ...(raw && !unanswered ? { raw } : {}) });
     }
 
-    if (stop === "max_tokens") { onEvent({ type: "notice", text: "The answer was cut short." }); break; }
-    if (stop === "refusal") { onEvent({ type: "notice", text: "The model declined to answer this." }); break; }
+    if (notice) { onEvent({ type: "notice", text: notice }); break; }
     if (stop !== "tool_calls" || last) break;
     if (calls.length === 0) continue; // a paused turn: send the history back and let the model resume
 

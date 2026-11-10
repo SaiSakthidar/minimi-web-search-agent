@@ -72,3 +72,14 @@ it("updateSession persists title and topics", async () => {
   expect(s2.getSession(sess.id)).toMatchObject({ title: "Postgres hosting", topics: ["neon", "supabase"] });
   expect(s2.getMessages(sess.id)).toHaveLength(1);
 });
+
+it("a rewrite racing an append never duplicates the message on disk", async () => {
+  const s = await MemoryStore.open(dir);
+  const sess = await s.createSession({ startedAt: "2026-11-03T09:00:00Z" });
+  const pending = [
+    s.updateSession(sess.id, { title: "racing" }),
+    s.appendMessage(sess.id, { role: "user", parts: [{ type: "text", text: "one" }] }, "2026-11-03T09:00:01Z"),
+  ];
+  await Promise.all(pending);
+  expect((await MemoryStore.open(dir)).getMessages(sess.id)).toHaveLength(1);
+});

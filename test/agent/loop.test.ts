@@ -46,7 +46,7 @@ it("stops after MAX_ROUNDS with the last-round note and no tools", async () => {
   const { provider, result } = await run([call, call, call, { text: "Final answer.", ...call }, call]);
   expect(provider.calls).toHaveLength(MAX_ROUNDS);
   const last = provider.calls[MAX_ROUNDS - 1];
-  expect(last.tools).toEqual([]);
+  expect(last.tools).toEqual(provider.calls[0].tools); // the tool set never changes mid-conversation
   expect(last.messages.at(-1)).toEqual({ role: "system", text: lastRoundNote() });
   const finalMsg = result.newMessages.at(-1) as Extract<Msg, { role: "assistant" }>;
   expect(finalMsg.parts.every((p) => p.type === "text")).toBe(true);
@@ -124,10 +124,33 @@ it("pickEffort is low for short chit-chat and medium otherwise", () => {
   expect(pickEffort("Tell me everything you know about the history of managed database services in the cloud")).toBe("medium");
 });
 
-it("systemPrompt states today's date on its final line and the diff contract", () => {
-  const p = systemPrompt({ today: "2026-11-10", providerLabel: "fake-model" });
-  expect(p.trim().split("\n").at(-1)).toContain("2026-11-10");
+it("systemPrompt is identical across days and states the diff contract", () => {
+  expect(systemPrompt.length).toBe(0); // takes no per-turn input, so it cannot drift between turns or days
+  const p = systemPrompt();
+  expect(p).not.toMatch(/today's date is/i);
   expect(p).toContain(DIFF_FENCE);
   expect(p).toContain("publishedAfter");
   expect(p).not.toMatch(/training (data|cutoff)/i);
+});
+
+it("a refusal with no output persists a non-empty assistant message without raw", async () => {
+  const { result } = await run([{ stop: "refusal" }]);
+  const a = result.newMessages.at(-1) as Extract<Msg, { role: "assistant" }>;
+  expect(a.parts.length).toBeGreaterThan(0);
+  expect(a.raw).toBeUndefined();
+});
+
+it("max_tokens in the middle of a tool call keeps no unanswered call and no raw", async () => {
+  const { result } = await run([{ text: "Let me", toolCalls: [{ name: "web_search", input: {} }], stop: "max_tokens" }]);
+  const a = result.newMessages.at(-1) as Extract<Msg, { role: "assistant" }>;
+  expect(a.parts).toEqual([{ type: "text", text: "Let me" }]);
+  expect(a.raw).toBeUndefined();
+});
+
+it("a tool-only final round still persists a non-empty assistant message", async () => {
+  const call = { toolCalls: [{ name: "web_search", input: { query: "x" } }] };
+  const { result } = await run([call, call, call, call]);
+  const a = result.newMessages.at(-1) as Extract<Msg, { role: "assistant" }>;
+  expect(a.parts.length).toBeGreaterThan(0);
+  expect(a.parts.every((p) => p.type === "text")).toBe(true);
 });

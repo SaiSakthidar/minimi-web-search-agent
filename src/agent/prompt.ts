@@ -1,5 +1,5 @@
-// The system prompt is the agent's policy. It is stable across turns (cached
-// prefix); only the final line, today's date, changes from day to day.
+// The system prompt is the agent's policy. It never changes between turns or
+// days, so the cached prefix and the model's preserved thinking stay valid.
 
 import * as chrono from "chrono-node";
 import type { Effort } from "../llm/types.ts";
@@ -45,8 +45,12 @@ Style
 - Match the length of the question: a short question gets a short answer. Use a list only for several parallel items.
 - Give dates as "7 Nov 2026" in prose.`;
 
-export function systemPrompt(opts: { today: string; providerLabel: string }): string {
-  return `${POLICY}\n\nToday's date is ${opts.today}. Reason about "last Tuesday", "since then" and "today" from this date.`;
+/**
+ * Frozen for the life of every conversation: the date lives in the per-turn recall note ("Today: ..."),
+ * because editing the system prompt invalidates the cache and the model's earlier thinking.
+ */
+export function systemPrompt(): string {
+  return `${POLICY}\n\nThe current date is given as "Today:" in the latest memory note. Reason about "last Tuesday", "since then" and "today" from that date.`;
 }
 
 export function lastRoundNote(): string {

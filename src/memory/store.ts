@@ -37,7 +37,7 @@ export class MemoryStore {
       const messages: StoredMessage[] = [];
       for (const rec of parseLines(await readFile(join(this.dir, "sessions", file), "utf8"))) {
         if (rec.type === "meta") { const { type: _t, ...m } = rec; meta = m as SessionMeta; }
-        else if (rec.type === "message") { const { type: _t, ...m } = rec; messages.push(m as StoredMessage); }
+        else if (rec.type === "message" && !messages.some((x) => x.id === rec.id)) { const { type: _t, ...m } = rec; messages.push(m as StoredMessage); }
       }
       if (meta) this.sessions.set(meta.id, { meta, messages });
     }
@@ -75,8 +75,9 @@ export class MemoryStore {
     const rec = this.mustGet(id);
     rec.meta = { ...rec.meta, ...patch };
     const path = this.sessionPath(id);
+    // Snapshot now: messages appended after this call are written by their own queued appends.
+    const body = line({ type: "meta", ...rec.meta }) + rec.messages.map((m) => line({ type: "message", ...m })).join("");
     await this.enqueue(path, async () => {
-      const body = line({ type: "meta", ...rec.meta }) + rec.messages.map((m) => line({ type: "message", ...m })).join("");
       await writeFile(`${path}.tmp`, body);
       await rename(`${path}.tmp`, path);
     });

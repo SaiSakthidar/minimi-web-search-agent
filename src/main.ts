@@ -35,8 +35,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
     const deps = await boot();
     const port = Number(process.env.PORT) || 3000;
-    createApp(deps).listen(port, () => {
-      console.log(`minimi on http://localhost:${port}  (${deps.provider.name}: ${deps.provider.modelLabel}${process.env.AGENT_NOW ? `, clock ${process.env.AGENT_NOW}` : ""})`);
+    const host = process.env.HOST || "127.0.0.1"; // local only by default: the server spends your API keys
+    createApp(deps).listen(port, host, () => {
+      console.log(`minimi on http://${host === "127.0.0.1" ? "localhost" : host}:${port}  (${deps.provider.name}: ${deps.provider.modelLabel}${process.env.AGENT_NOW ? `, clock ${process.env.AGENT_NOW}` : ""})`);
     });
   } catch (e) {
     console.error(`\n${(e as Error).message}\n`);

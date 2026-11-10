@@ -93,7 +93,8 @@ export class AnthropicProvider implements LlmProvider {
       }
     } catch (e) {
       // An API that rejects the fallback beta fails before any event; retry once without it.
-      if (started || !this.fallbacksSupported || !(e instanceof Anthropic.BadRequestError)) throw e;
+      const aboutFallbacks = e instanceof Anthropic.BadRequestError && /fallback|server-side-fallback|beta/i.test(e.message);
+      if (started || !this.fallbacksSupported || !aboutFallbacks) throw e;
       console.warn(`[anthropic] fallbacks rejected (${e.message}); continuing without them`);
       this.fallbacksSupported = false;
       stream = this.open(params, req.signal);

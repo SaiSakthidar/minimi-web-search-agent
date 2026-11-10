@@ -2,6 +2,8 @@
 // paragraphs that bear on `focus`. Pages that are empty without JavaScript, or
 // that refuse the fetch, fall back to the search provider's page contents.
 
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import { PDFParse } from "pdf-parse";
@@ -14,9 +16,55 @@ const OUTPUT_CHARS = 10_000;
 const CHUNK_CHARS = 800;
 const MIN_PAGE_CHARS = 500;
 const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
 const USER_AGENT = "Mozilla/5.0 (compatible; minimi-agent/0.1)";
 
 export type Para = { heading: string; text: string };
+type Lookup = (host: string) => Promise<{ address: string; family: number }[]>;
+
+/** Loopback, private, link-local, CGNAT, multicast and unspecified addresses: never fetched on the model's behalf. */
+export function isPrivateAddress(ip: string): boolean {
+  const v = isIP(ip);
+  if (v === 6) {
+    const a = ip.toLowerCase();
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+    if (mapped) return isPrivateAddress(mapped[1]);
+    return a === "::" || a === "::1" || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || /^ff/.test(a);
+  }
+  if (v !== 4) return true;
+  const [a, b] = ip.split(".").map(Number);
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+const defaultLookup: Lookup = (host) => dnsLookup(host, { all: true });
+
+async function hostRefusal(url: URL, lookup: Lookup): Promise<string | null> {
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return `Refusing to fetch ${url.href}: local address.`;
+  let addresses: string[];
+  try { addresses = isIP(host) ? [host] : (await lookup(host)).map((a) => a.address); }
+  catch { return null; } // unresolvable: let the fetch itself fail and fall back to the provider
+  return addresses.some(isPrivateAddress) ? `Refusing to fetch ${url.href}: private or local network address.` : null;
+}
+
+/** Reads at most maxBytes; returns null when the body is larger. */
+async function readCapped(res: Response, maxBytes: number): Promise<Buffer | null> {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+const sizeLabel = (n: number) => (n >= 1024 * 1024 ? `${Math.round(n / 1024 / 1024)} MB` : `${Math.round(n / 1024)} KB`);
 type Page = { title: string; publishedDate: string | null; paras: Para[] };
 
 const SKIP = new Set(["script", "style", "noscript", "template", "svg", "nav", "header", "footer", "aside", "form", "iframe", "button", "select"]);
@@ -119,8 +167,14 @@ export function rankParagraphs(paras: Para[], focus: string, max: number): Para[
   return top.sort((a, b) => a.i - b.i).map((s) => s.p);
 }
 
-export function fetchTool(provider: SearchProvider, deps: { fetchImpl?: typeof fetch; ttlMs?: number; timeoutMs?: number } = {}): ToolHandler {
+export function fetchTool(
+  provider: SearchProvider,
+  deps: { fetchImpl?: typeof fetch; ttlMs?: number; timeoutMs?: number; maxBytes?: number; lookup?: Lookup; allowPrivateHosts?: boolean } = {},
+): ToolHandler {
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const lookup = deps.lookup ?? defaultLookup;
+  const maxBytes = deps.maxBytes ?? MAX_BYTES;
+  const guard = (u: URL) => (deps.allowPrivateHosts ? Promise.resolve(null) : hostRefusal(u, lookup));
   const ttlMs = deps.ttlMs ?? 15 * 60_000;
   const timeoutMs = deps.timeoutMs ?? 10_000;
   const cache = new Map<string, { at: number; page: Page }>();
@@ -136,20 +190,34 @@ export function fetchTool(provider: SearchProvider, deps: { fetchImpl?: typeof f
   async function load(url: string): Promise<Page | string> {
     let res: Response;
     try {
-      res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "follow", headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5" } });
+      const signal = AbortSignal.timeout(timeoutMs);
+      let current = new URL(url);
+      for (let hop = 0; ; hop++) {
+        const refusal = await guard(current);
+        if (refusal) return refusal;
+        res = await fetchImpl(current.href, { signal, redirect: "manual", headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5" } });
+        const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+        if (!location) break;
+        if (hop >= MAX_REDIRECTS) return `Could not fetch ${url}: too many redirects.`;
+        current = new URL(location, current);
+        if (current.protocol !== "http:" && current.protocol !== "https:") return `Could not fetch ${url}: redirected to ${current.protocol}`;
+      }
     } catch (e) {
       const why = (e as Error).name === "TimeoutError" ? `timed out after ${timeoutMs / 1000}s` : (e as Error).message;
       return (await viaProvider(url)) ?? `Could not fetch ${url}: ${why}.`;
     }
     if (!res.ok) return (await viaProvider(url)) ?? `Could not fetch ${url}: HTTP ${res.status}.`;
     const type = (res.headers.get("content-type") ?? "").toLowerCase();
-    if (Number(res.headers.get("content-length") ?? 0) > MAX_BYTES) return `Could not read ${url}: larger than ${MAX_BYTES / 1024 / 1024} MB.`;
+    const tooBig = `Could not read ${url}: larger than ${sizeLabel(maxBytes)}.`;
+    if (Number(res.headers.get("content-length") ?? 0) > maxBytes) return tooBig;
+    if (type && !/pdf|html|xml|text\/plain/.test(type)) return `Could not read ${url}: unsupported content type ${type.split(";")[0]}.`;
+    const buf = await readCapped(res, maxBytes);
+    if (!buf) return tooBig;
     if (type.includes("pdf")) {
-      try { return { title: "", publishedDate: null, paras: await pdfToParagraphs(Buffer.from(await res.arrayBuffer())) }; }
+      try { return { title: "", publishedDate: null, paras: await pdfToParagraphs(buf) }; }
       catch (e) { return `Could not read the PDF at ${url}: ${(e as Error).message}.`; }
     }
-    if (type && !/html|xml|text\/plain/.test(type)) return `Could not read ${url}: unsupported content type ${type.split(";")[0]}.`;
-    const body = await res.text();
+    const body = buf.toString("utf8");
     const page: Page = type.includes("text/plain")
       ? { title: "", publishedDate: null, paras: textToParagraphs(body) }
       : { ...pageMeta(body), paras: extractParagraphs(body) };

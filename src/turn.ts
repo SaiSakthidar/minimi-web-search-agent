@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { runTurn, type TurnEvent, type TurnResult } from "./agent/loop.ts";
 import { pickEffort, systemPrompt } from "./agent/prompt.ts";
-import { dayKey, now } from "./clock.ts";
+import { now } from "./clock.ts";
 import type { LlmProvider, Msg } from "./llm/types.ts";
 import { scheduleExtraction } from "./memory/extract.ts";
 import { formatRecall, recall, type RecallResult } from "./memory/recall.ts";
@@ -41,7 +41,7 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
   const { store, provider } = deps;
   const session = store.getSession(sessionId);
   if (!session) throw new Error(`Unknown session ${sessionId}`);
-  const isFirstTurn = !store.getMessages(sessionId).some((m) => m.msg.role === "user" && m.msg.parts.some((p) => p.type === "text"));
+  const isFirstTurn = !session.title; // set by extraction after the first answered turn
 
   const at = now();
   const r = recall(store, text, at, { sessionId });
@@ -49,19 +49,29 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
   const summary = recallSummary(r);
   onEvent({ type: "recall", block, summary });
 
+  // The recall note goes after the user message: a mid-conversation system message must follow a user turn.
   const userMsg: Msg = { role: "user", parts: [{ type: "text", text }] };
-  await store.appendMessage(sessionId, { role: "system", text: block }, at.toISOString());
   await store.appendMessage(sessionId, userMsg, at.toISOString());
+  await store.appendMessage(sessionId, { role: "system", text: block }, at.toISOString());
 
-  const result = await runTurn({
-    provider,
-    system: systemPrompt({ today: dayKey(at), providerLabel: provider.modelLabel }),
-    history: store.getMessages(sessionId).map((m) => m.msg),
-    tools: deps.tools,
-    effort: pickEffort(text),
-    onEvent,
-    signal,
-  });
+  let result: TurnResult;
+  try {
+    result = await runTurn({
+      provider,
+      system: systemPrompt(),
+      history: store.getMessages(sessionId).map((m) => m.msg),
+      tools: deps.tools,
+      effort: pickEffort(text),
+      onEvent,
+      signal,
+    });
+  } catch (e) {
+    // Close the turn so the stored transcript stays valid to replay; the next turn starts cleanly.
+    const note = signal?.aborted ? "(stopped before answering)" : "(this turn failed before an answer)";
+    await store.appendMessage(sessionId, { role: "assistant", parts: [{ type: "text", text: note }] }, now().toISOString(),
+      { text: note, sources: [], diff: null, recall: summary });
+    throw e;
+  }
 
   const cited = citedSources(result);
   onEvent({ type: "sources", sources: cited });

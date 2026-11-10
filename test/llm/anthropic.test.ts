@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
 import { afterLastFallback, mapStop, toAnthropicMessages, toAnthropicTools } from "../../src/llm/anthropic.ts";
+import { fetchTool } from "../../src/tools/fetch.ts";
+import { searchTool } from "../../src/tools/search.ts";
 
 it("replays anthropic raw content verbatim", () => {
   const out = toAnthropicMessages([{
@@ -67,4 +69,16 @@ it("maps stop reasons", () => {
   expect(mapStop("max_tokens")).toBe("max_tokens");
   expect(mapStop("model_context_window_exceeded")).toBe("max_tokens");
   expect(mapStop("refusal")).toBe("refusal");
+});
+
+it("strict tool schemas use no keywords strict mode rejects", () => {
+  const provider = { async search() { return []; }, async contents() { return null; } };
+  const banned = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"];
+  const found: string[] = [];
+  const walk = (node: unknown, path: string) => {
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node)) { if (banned.includes(k)) found.push(`${path}.${k}`); walk(v, `${path}.${k}`); }
+  };
+  for (const t of toAnthropicTools([searchTool(provider).spec, fetchTool(provider).spec])) if (t.strict) walk(t.input_schema, t.name);
+  expect(found).toEqual([]);
 });

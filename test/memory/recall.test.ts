@@ -113,3 +113,17 @@ it("trims long assistant answers", async () => {
   expect(block).not.toContain("x".repeat(2500));
   expect(block).toContain("x".repeat(2400));
 });
+
+it("never reports today or future days as missing, and ignores month-only phrases", () => {
+  const r = recall(store, "What did I ask you on 3 November? Is your answer still correct today?", now, { sessionId: "current" });
+  expect(r.missingDays).toEqual(["2026-11-03"]);
+  expect(resolveDates("anything new in November?", now)).toEqual([]);
+  expect(recall(store, "remind me next week", now, { sessionId: "current" }).missingDays).toEqual([]);
+});
+
+it("points at the current conversation when the asked-about day is in it", async () => {
+  const s = await session("2026-11-09", "CRM shortlist", ["crm"], [["Shortlist CRMs", "HubSpot [1]"]]);
+  const r = recall(store, "What did I ask you on Monday?", now, { sessionId: s.id });
+  expect(r.missingDays).toEqual([]);
+  expect(formatRecall(r, now)).toContain("This conversation already has messages from 2026-11-09");
+});

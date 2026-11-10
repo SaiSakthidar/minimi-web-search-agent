@@ -17,13 +17,13 @@ const MAX_LINES_PER_SESSION = 12;
 
 export type ResolvedDate = { phrase: string; day: string };
 export type RecalledSession = { meta: SessionMeta; day: string; lines: string[]; matchedBy: "date" | "topic" };
-export type RecallResult = { dates: ResolvedDate[]; sessions: RecalledSession[]; claims: Claim[]; missingDays: string[] };
+export type RecallResult = { dates: ResolvedDate[]; sessions: RecalledSession[]; claims: Claim[]; missingDays: string[]; inThisSession: string[] };
 
 export function resolveDates(text: string, now: Date): ResolvedDate[] {
   const out: ResolvedDate[] = [];
   for (const r of chrono.parse(text, now, { forwardDate: false })) {
     const s = r.start;
-    if (!(s.isCertain("day") || s.isCertain("weekday") || s.isCertain("month"))) continue; // a bare time is not a date
+    if (!(s.isCertain("day") || s.isCertain("weekday"))) continue; // a bare time or a month on its own is not a day
     const day = dayKey(s.date());
     if (!out.some((d) => d.day === day)) out.push({ phrase: r.text, day });
   }
@@ -57,11 +57,19 @@ export function recall(store: MemoryStore, text: string, now: Date, exclude: { s
   const words = new Set(tokenize(text));
   const sessions: RecalledSession[] = [];
   const missingDays: string[] = [];
+  const inThisSession: string[] = [];
+  const today = dayKey(now);
 
-  // 1. Date matches, by message timestamp, grouped per session.
+  // 1. Date matches, by message timestamp, grouped per session. Today and later are not memory questions.
   for (const { day } of dates) {
-    const msgs = store.messagesOnDay(day).filter((m) => m.sessionId !== exclude.sessionId);
-    if (msgs.length === 0) { missingDays.push(day); continue; }
+    if (day >= today) continue;
+    const all = store.messagesOnDay(day);
+    const msgs = all.filter((m) => m.sessionId !== exclude.sessionId);
+    if (msgs.length === 0) {
+      if (all.length) inThisSession.push(day);
+      else missingDays.push(day);
+      continue;
+    }
     const bySession = new Map<string, StoredMessage[]>();
     for (const m of msgs) bySession.set(m.sessionId, [...(bySession.get(m.sessionId) ?? []), m]);
     for (const [id, ms] of bySession) {
@@ -88,7 +96,7 @@ export function recall(store: MemoryStore, text: string, now: Date, exclude: { s
   }
 
   // 3. Claims: everything observed on a matched day, then the best topic overlaps.
-  const matchedDays = new Set(dates.map((d) => d.day));
+  const matchedDays = new Set(dates.map((d) => d.day).filter((d) => d < today));
   const all = store.claims();
   const onDay = all.filter((c) => matchedDays.has(c.observedAt.slice(0, 10)));
   const byTopic = all
@@ -98,7 +106,7 @@ export function recall(store: MemoryStore, text: string, now: Date, exclude: { s
     .sort((a, b) => b.score - a.score || b.c.observedAt.localeCompare(a.c.observedAt))
     .map((x) => x.c);
 
-  return { dates, sessions: sessions.slice(0, MAX_SESSIONS), claims: [...onDay, ...byTopic].slice(0, MAX_CLAIMS), missingDays };
+  return { dates, sessions: sessions.slice(0, MAX_SESSIONS), claims: [...onDay, ...byTopic].slice(0, MAX_CLAIMS), missingDays, inThisSession };
 }
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -108,6 +116,7 @@ export function formatRecall(r: RecallResult, now: Date): string {
   out.push(`Today: ${dayKey(now)} (${WEEKDAY[now.getDay()]})`);
   if (r.dates.length) out.push(`Resolved dates: ${r.dates.map((d) => `"${d.phrase}" = ${d.day}`).join("; ")}`);
   for (const d of r.missingDays) out.push(`No record for ${d} in earlier conversations.`);
+  for (const d of r.inThisSession) out.push(`This conversation already has messages from ${d}; they are in the transcript above.`);
 
   if (r.sessions.length === 0 && r.claims.length === 0) {
     out.push("No earlier conversations or claims match this message.");
