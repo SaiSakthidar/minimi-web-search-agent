@@ -6,8 +6,8 @@
   "description": "Chat agent with web search, cross-session memory, and freshness checks.",
   "engines": { "node": ">=20" },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed.ts",

@@ -7,7 +7,7 @@ import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs
 import { join } from "node:path";
 import { dayKey } from "../clock.ts";
 import type { Msg } from "../llm/types.ts";
-import type { Claim, ClaimInput, SessionMeta, StoredMessage } from "./types.ts";
+import type { Claim, ClaimInput, SessionMeta, StoredMessage, TurnMeta } from "./types.ts";
 
 type SessionRecord = { meta: SessionMeta; messages: StoredMessage[] };
 
@@ -82,9 +82,9 @@ export class MemoryStore {
     });
   }
 
-  async appendMessage(sessionId: string, msg: Msg, at: string): Promise<StoredMessage> {
+  async appendMessage(sessionId: string, msg: Msg, at: string, meta?: TurnMeta): Promise<StoredMessage> {
     const rec = this.mustGet(sessionId);
-    const stored: StoredMessage = { id: randomUUID(), sessionId, at, msg };
+    const stored: StoredMessage = { id: randomUUID(), sessionId, at, msg, ...(meta ? { meta } : {}) };
     rec.messages.push(stored);
     await this.enqueue(this.sessionPath(sessionId), () => appendFile(this.sessionPath(sessionId), line({ type: "message", ...stored })));
     return stored;
