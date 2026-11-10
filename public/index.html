@@ -1,1 +1,33 @@
-<!doctype html><title>minimi</title><p>UI lands in the next commit.</p>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>minimi</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <button class="new" id="new-session" type="button">+ New conversation</button>
+      <nav class="sessions" id="sessions" aria-label="Conversations"></nav>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+    <section class="main">
+      <header class="top">
+        <button class="menu" id="menu" type="button" aria-label="Show conversations">☰</button>
+        <span class="brand">minimi</span>
+        <span class="meta" id="meta"></span>
+      </header>
+      <div class="scroll" id="scroll">
+        <div class="thread" id="thread"></div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Ask anything…" autocomplete="off"></textarea>
+        <button id="send" type="submit" aria-label="Send">↑</button>
+      </form>
+    </section>
+  </div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
