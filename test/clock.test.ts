@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { dayKey, now, setOverride } from "../src/clock.ts";
+import { dayKey, getOverride, now, setOverride } from "../src/clock.ts";
 
 afterEach(() => setOverride(null));
 
@@ -17,4 +17,10 @@ it("returns the real time when the override is cleared", () => {
 it("dayKey uses the local date", () => {
   expect(dayKey("2026-11-03T10:00:00Z")).toMatch(/^2026-11-0[34]$/);
   expect(dayKey(new Date(2026, 10, 3, 23, 30))).toBe("2026-11-03");
+});
+
+it("getOverride reports the active override", () => {
+  expect(getOverride()).toBeNull();
+  setOverride("2026-11-03T10:00:00Z");
+  expect(getOverride()).toBe("2026-11-03T10:00:00.000Z");
 });

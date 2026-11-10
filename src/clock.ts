@@ -10,6 +10,10 @@ export function setOverride(iso: string | null): void {
   override = d;
 }
 
+export function getOverride(): string | null {
+  return override ? override.toISOString() : null;
+}
+
 export function now(): Date {
   if (override) return new Date(override);
   const env = process.env.AGENT_NOW;

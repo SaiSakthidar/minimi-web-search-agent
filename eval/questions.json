@@ -1,0 +1,22 @@
+[
+  { "id": "brief-crm", "text": "On Monday we shortlisted 5 CRM tools. Have any of them changed pricing since?", "needsSearch": true, "expects": ["refers to the Monday CRM shortlist from memory", "re-checks each tool's pricing with dated, cited sources", "states clearly which changed, which did not, and which could not be confirmed"] },
+  { "id": "brief-nov3", "text": "What did I ask you on 3 November? Is your answer still correct today?", "needsSearch": true, "expects": ["says what was asked on 3 November from memory, or that there is no record", "re-verifies the earlier answer with current cited sources", "gives a verdict on whether it is still correct"] },
+  { "id": "brief-postgres", "text": "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?", "needsSearch": true, "expects": ["recalls the Postgres hosting session and the prices given then", "searches each provider's current pricing", "reports changed / unchanged / unverified per provider with citations"] },
+  { "id": "no-record", "text": "What did we talk about on 14 October?", "needsSearch": false, "expects": ["says there is no record of a conversation on 14 October", "does not invent a conversation"] },
+  { "id": "false-premise", "text": "Last week you told me Neon was free forever for all users. Is that still true?", "needsSearch": true, "expects": ["notes that the record does not show that claim, if it doesn't", "checks Neon's current free tier with a cited source"] },
+  { "id": "greeting", "text": "hi!", "needsSearch": false, "expects": ["a short friendly reply", "no searching, no citations"] },
+  { "id": "thanks", "text": "thanks, that's helpful", "needsSearch": false, "expects": ["a brief acknowledgement"] },
+  { "id": "arithmetic", "text": "What is 17% of 2,400?", "needsSearch": false, "expects": ["408"] },
+  { "id": "convert", "text": "Convert 72 degrees Fahrenheit to Celsius.", "needsSearch": false, "expects": ["about 22.2 °C"] },
+  { "id": "capability", "text": "What can you do?", "needsSearch": false, "expects": ["briefly describes web search with cited sources and memory of earlier conversations"] },
+  { "id": "current-price", "text": "How much does GitHub Copilot Business cost per user per month right now?", "needsSearch": true, "expects": ["a specific current price", "a citation to GitHub or a dated source"] },
+  { "id": "compare", "text": "Compare the monthly price of the entry paid plans of Vercel and Netlify.", "needsSearch": true, "expects": ["a price for each, each cited", "parallel or separate lookups for each vendor"] },
+  { "id": "latest-release", "text": "What is the latest stable version of Node.js?", "needsSearch": true, "expects": ["a specific version number", "a dated, cited source such as nodejs.org"] },
+  { "id": "news", "text": "What happened in AI news this week?", "needsSearch": true, "expects": ["several items from the past week", "each with a date and citation"] },
+  { "id": "since", "text": "Has Stripe changed its standard card processing fee in the US since September 2026?", "needsSearch": true, "expects": ["the current fee with a citation", "a clear yes/no on change since September 2026, or that it could not be confirmed"] },
+  { "id": "primary-source", "text": "What are the rate limits on the free tier of the OpenWeatherMap API?", "needsSearch": true, "expects": ["specific limits", "cites OpenWeatherMap's own pages if available"] },
+  { "id": "pdf", "text": "What is the headline inflation figure in the latest US CPI release?", "needsSearch": true, "expects": ["a specific figure and the release month", "a cited, dated source"] },
+  { "id": "unanswerable", "text": "What will Apple's stock price be next Friday?", "needsSearch": false, "expects": ["explains it cannot know a future price", "may give the latest price with a citation if it searched"] },
+  { "id": "topic-recall", "text": "Which travel laptop did you recommend before, and is it still available at that price?", "needsSearch": true, "expects": ["recalls the earlier laptop recommendation by topic", "re-checks the price with a cited source"] },
+  { "id": "followup-context", "text": "Summarise in one sentence what you just told me.", "needsSearch": false, "expects": ["a one-sentence reply without searching (it is a fresh session, so it may say there is nothing yet)"] }
+]
