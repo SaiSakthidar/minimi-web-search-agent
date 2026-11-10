@@ -54,3 +54,41 @@ it("accumulates streamed steps: text, thought signature, and function arguments"
     { type: "function_call", id: "c1", name: "web_search", arguments: { query: "neon" } },
   ]);
 });
+
+import { GeminiProvider } from "../../src/llm/gemini.ts";
+
+function fakeClient(create: (params: any, opts: any) => Promise<any>) {
+  const calls: { params: any; opts: any }[] = [];
+  return { calls, client: { interactions: { create: (params: any, opts: any) => { calls.push({ params, opts }); return create(params, opts); } } } };
+}
+
+const req = { system: "s", messages: [{ role: "user" as const, parts: [{ type: "text" as const, text: "hi" }] }], tools: [], effort: "low" as const };
+
+async function drain(it: AsyncIterable<unknown>) { for await (const _ of it) { /* consume */ } }
+
+it("fails with a clear error when Gemini sends nothing before the first-event timeout", async () => {
+  const { client } = fakeClient(async (_p, opts) => ({
+    async *[Symbol.asyncIterator]() {
+      await new Promise((_, reject) => opts.fetch_options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    },
+  }));
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any, firstEventTimeoutMs: 50 });
+  const t0 = Date.now();
+  await expect(drain(p.stream(req))).rejects.toThrow(/gemini-test did not respond within/);
+  expect(Date.now() - t0).toBeLessThan(2000);
+});
+
+it("turns an overload error into a message that says what to do", async () => {
+  const { client } = fakeClient(async () => { throw Object.assign(new Error('{"error":{"message":"gemini-test is currently experiencing high demand","code":"service_unavailable"}}'), { status: 503 }); });
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any });
+  await expect(drain(p.stream(req))).rejects.toThrow(/gemini-test is overloaded.*GEMINI_MODEL/);
+  await expect(p.completeJson({ system: "s", prompt: "p", schema: {} })).rejects.toThrow(/overloaded/);
+});
+
+it("bounds retries and passes an abort signal on every request", async () => {
+  const { client, calls } = fakeClient(async () => ({ async *[Symbol.asyncIterator]() { yield { event_type: "interaction.completed", interaction: { status: "completed" } }; } }));
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any });
+  await drain(p.stream(req));
+  expect(calls[0].opts.retries).toMatchObject({ strategy: "attempt-count-backoff", maxRetries: 2 });
+  expect(calls[0].opts.fetch_options.signal).toBeInstanceOf(AbortSignal);
+});
