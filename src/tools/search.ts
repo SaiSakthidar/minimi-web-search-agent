@@ -2,7 +2,7 @@
 // Dated passages, syndicated copies collapsed, undated first then oldest to
 // newest so the freshest evidence sits closest to the model's next step.
 
-import { tokenize } from "../memory/recall.ts";
+import { tokenize } from "../text.ts";
 import type { RawResult, SearchProvider, SourceRef, ToolHandler } from "./types.ts";
 
 export const SEARCH_CAP = 6;

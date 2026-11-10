@@ -5,7 +5,7 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import { PDFParse } from "pdf-parse";
-import { tokenize } from "../memory/recall.ts";
+import { tokenize } from "../text.ts";
 import type { SearchProvider, SourceRef, ToolHandler } from "./types.ts";
 
 export const FETCH_CAP = 4;
