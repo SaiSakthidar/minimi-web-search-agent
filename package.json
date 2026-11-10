@@ -1,0 +1,31 @@
+{
+  "name": "minimi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat agent with web search, cross-session memory, and freshness checks.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "seed": "tsx scripts/seed.ts",
+    "eval": "tsx eval/run.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.7.0",
+    "@google/genai": "3.0.0",
+    "@mozilla/readability": "0.6.0",
+    "chrono-node": "2.10.3",
+    "exa-js": "2.28.0",
+    "linkedom": "0.18.15",
+    "pdf-parse": "2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12"
+  }
+}

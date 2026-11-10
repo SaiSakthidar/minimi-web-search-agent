@@ -21,7 +21,7 @@ Goals
 Non-goals
 - Multi-user auth, deployment, rate limiting.
 - Vector database, embeddings, knowledge graph, MCP, multi-agent orchestration, model fine-tuning.
-- Reading PDFs, images, or JavaScript-rendered pages.
+- Reading images. (PDFs are read by `fetch_url`; JavaScript-rendered pages fall back to Exa contents.)
 
 Anti-goals (would make this a failure even if it works)
 - Answering a "has it changed" question from memory alone without searching.
