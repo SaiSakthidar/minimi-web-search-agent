@@ -73,3 +73,13 @@ it("runEval records timing, rounds, searches and the judge verdict per question"
   expect(rows[0].totalMs).toBeGreaterThanOrEqual(0);
   expect(rows[0].firstTokenMs).not.toBeNull();
 });
+
+it("runEval grades with a separate judge provider when one is given", async () => {
+  const store = await MemoryStore.open(dir);
+  const provider = fakeProvider([{ text: "408." }, { json: { title: "t", topics: [], claims: [] } }]);
+  const judge = fakeProvider([{ json: { correct: true, cited: true, notes: "ok" } }]);
+  const rows = await runEval({ provider, search, store, judge }, [{ id: "math", text: "What is 17% of 2,400?", needsSearch: false, expects: ["408"] }]);
+  expect(rows[0]).toMatchObject({ correct: true, searchedAsExpected: true });
+  expect(judge.jsonCalls).toHaveLength(1);
+  expect(provider.jsonCalls).toHaveLength(1); // only the memory extraction
+});
