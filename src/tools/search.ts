@@ -11,8 +11,8 @@ const HIGHLIGHT_CHARS = 400;
 
 const DESCRIPTION =
   "Search the live web. Returns numbered results with url, published date (or 'undated'), and the passages most " +
-  "relevant to the query. Cite results by their [n]. Use one call per fact; for comparisons, call once per item in " +
-  "parallel. For 'has it changed since X' questions, set publishedAfter to X.";
+  "relevant to the query. Cite results by their [n]. Put every query you need right now in one call: for a comparison " +
+  "or a re-check of N items, pass N queries together. For 'has it changed since X' questions, set publishedAfter to X.";
 
 const day = (d?: string) => (d ? d.slice(0, 10) : null);
 
@@ -64,34 +64,56 @@ export function searchTool(provider: SearchProvider): ToolHandler {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Short search query. Start broad, then narrow." },
+          queries: {
+            type: "array",
+            items: { type: "string" },
+            description: "One or more short queries, searched in parallel. Comparing N things: one query per thing, in this one call.",
+          },
           publishedAfter: { type: "string", description: "YYYY-MM-DD; only results published after this" },
-          numResults: { type: "integer", description: "How many results, 3 to 10 (default 8)" },
+          numResults: { type: "integer", description: "Results per query, 3 to 10 (default 8 for one query, 5 for several)" },
         },
-        required: ["query"],
+        required: ["queries"],
         additionalProperties: false,
       },
     },
     async run(input, ctx) {
-      const { query, publishedAfter, numResults } = (input ?? {}) as { query?: unknown; publishedAfter?: unknown; numResults?: unknown };
-      if (typeof query !== "string" || !query.trim()) return { isError: true, content: "web_search needs a non-empty 'query' string." };
-      ctx.searchCalls++;
-      if (ctx.searchCalls > SEARCH_CAP) {
+      const { queries, query, publishedAfter, numResults } = (input ?? {}) as { queries?: unknown; query?: unknown; publishedAfter?: unknown; numResults?: unknown };
+      const asked = (Array.isArray(queries) ? queries : [query])
+        .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+        .map((q) => q.trim());
+      if (asked.length === 0) return { isError: true, content: "web_search needs at least one non-empty query in 'queries'." };
+      const room = Math.max(0, SEARCH_CAP - ctx.searchCalls);
+      if (room === 0) {
+        ctx.searchCalls++;
         return { isError: true, content: "Search cap reached for this turn. Answer with what you have and say what you could not verify." };
       }
+      const run = asked.slice(0, room);
+      const skipped = asked.slice(room);
+      ctx.searchCalls += run.length;
+
       const after = typeof publishedAfter === "string" && /^\d{4}-\d{2}-\d{2}/.test(publishedAfter) ? publishedAfter.slice(0, 10) : undefined;
-      const n = typeof numResults === "number" ? Math.min(10, Math.max(3, Math.round(numResults))) : 8;
-      ctx.onStatus(`searching: ${query}${after ? ` since ${after}` : ""}`);
-      let raw: RawResult[];
-      try {
-        raw = await provider.search({ query, numResults: n, ...(after ? { publishedAfter: after } : {}) });
-      } catch (e) {
-        return { isError: true, content: `Search failed: ${(e as Error).message}. Try a different query or answer with what you have.` };
+      const n = typeof numResults === "number" ? Math.min(10, Math.max(3, Math.round(numResults))) : run.length > 1 ? 5 : 8;
+      for (const q of run) ctx.onStatus(`searching: ${q}${after ? ` since ${after}` : ""}`);
+      const settled = await Promise.allSettled(run.map((q) => provider.search({ query: q, numResults: n, ...(after ? { publishedAfter: after } : {}) })));
+
+      const raw: RawResult[] = [];
+      const notes: string[] = [];
+      settled.forEach((res, i) => {
+        if (res.status === "fulfilled") {
+          raw.push(...res.value);
+          if (res.value.length === 0) notes.push(`No results for "${run[i]}"${after ? ` published after ${after}` : ""}.`);
+        } else notes.push(`Search failed for "${run[i]}": ${(res.reason as Error)?.message ?? res.reason}.`);
+      });
+      if (skipped.length) notes.push(`Skipped (search cap): ${skipped.join("; ")}.`);
+      if (raw.length === 0) {
+        const allFailed = settled.every((x) => x.status === "rejected");
+        return { ...(allFailed ? { isError: true } : {}), content: [...notes, allFailed ? "Try different queries or answer with what you have." : ""].filter(Boolean).join("\n") };
       }
-      if (raw.length === 0) return { content: `No results for "${query}"${after ? ` published after ${after}` : ""}.` };
-      const { sources, rendered } = prepareResults(raw, ctx.sources.length + 1, query);
+      const seen = new Set<string>();
+      const unique = raw.filter((r) => (seen.has(r.url) ? false : (seen.add(r.url), true)));
+      const { sources, rendered } = prepareResults(unique, ctx.sources.length + 1, run.join(" "));
       ctx.sources.push(...sources);
-      return { content: rendered };
+      return { content: [rendered, ...notes].join("\n\n") };
     },
   };
 }

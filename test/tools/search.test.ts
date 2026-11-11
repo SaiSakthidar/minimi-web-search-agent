@@ -102,3 +102,35 @@ it("tags a result as the official site when its domain name is a product named i
   expect(block("neon-vs-supabase.com")).not.toContain("official site");
   expect(block("supabase.com")).not.toContain("official site");
 });
+
+it("runs several queries from one call in parallel and numbers the merged results", async () => {
+  let inFlight = 0, maxInFlight = 0;
+  const provider: SearchProvider & { queries: any[] } = {
+    queries: [],
+    async search(q) {
+      this.queries.push(q); inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20)); inFlight--;
+      return [r(`${q.query} pricing`, `https://${q.query}.com/pricing`, "2026-11-01")];
+    },
+    async contents() { return null; },
+  };
+  const statuses: string[] = [];
+  const ctx = newTurnContext((s) => statuses.push(s));
+  const out = await searchTool(provider).run({ queries: ["zoho", "pipedrive", "hubspot"], publishedAfter: "2026-11-09" }, ctx);
+  expect(maxInFlight).toBe(3);
+  expect(provider.queries.map((q) => q.query)).toEqual(["zoho", "pipedrive", "hubspot"]);
+  expect(provider.queries.every((q) => q.publishedAfter === "2026-11-09")).toBe(true);
+  expect(ctx.searchCalls).toBe(3);
+  expect(ctx.sources.map((s) => s.id)).toEqual([1, 2, 3]);
+  expect(out.content).toContain("official site");
+  expect(statuses).toHaveLength(3);
+});
+
+it("runs only as many queries as the cap allows and says which were skipped", async () => {
+  const provider = fakeSearch([[r("A", "https://a.com", "2026-11-01")]]);
+  const ctx = newTurnContext();
+  ctx.searchCalls = 5;
+  const out = await searchTool(provider).run({ queries: ["a", "b", "c"] }, ctx);
+  expect(provider.queries.map((q: any) => q.query)).toEqual(["a"]);
+  expect(out.content).toMatch(/Skipped \(search cap\): b; c/);
+});
