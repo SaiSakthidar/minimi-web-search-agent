@@ -127,3 +127,27 @@ it("points at the current conversation when the asked-about day is in it", async
   expect(r.missingDays).toEqual([]);
   expect(formatRecall(r, now)).toContain("This conversation already has messages from 2026-11-09");
 });
+
+it("does not match sessions or claims on generic words alone", async () => {
+  await session("2026-11-10", "CRM Pricing Update Check", ["crm", "hubspot"], [["Have CRM prices changed?", "No [1]."]]);
+  await session("2026-11-10", "Managed Postgres Entry Plans", ["postgres"], [["Compare the entry paid plans and monthly prices of Supabase and Neon", "Supabase $25 [2]."]]);
+  await store.addClaim(claim({ subject: "Apple MacBook Air", predicate: "base model price", value: "$1,299" }));
+  const node = recall(store, "What is the latest LTS version of Node.js? Check that the version matches nodejs.org.", now, { sessionId: "current" });
+  expect(node.sessions).toEqual([]);
+  const vercel = recall(store, "Compare the monthly price of Vercel Pro and Netlify Pro.", now, { sessionId: "current" });
+  expect(vercel.sessions).toEqual([]);
+  expect(vercel.claims).toEqual([]);
+});
+
+it("recalls the clean final answer without diff blocks, old citation numbers or intermediate rounds", async () => {
+  const s = await store.createSession({ startedAt: local("2026-11-03"), seeded: true });
+  await store.appendMessage(s.id, user("Has Neon changed?"), local("2026-11-03"));
+  await store.appendMessage(s.id, asst("Let me check."), local("2026-11-03"));
+  const raw = 'Neon is $24 now [2, 3].\n\n```json-diff\n{"items":[]}\n```';
+  await store.appendMessage(s.id, asst(raw), local("2026-11-03"), { text: "Neon is $24 now [2, 3].", sources: [], diff: null, recall: null });
+  const block = formatRecall(recall(store, "What did I ask on 3 November?", now, { sessionId: "current" }), now);
+  expect(block).toContain("assistant: Neon is $24 now.");
+  expect(block).not.toContain("json-diff");
+  expect(block).not.toContain("[2, 3]");
+  expect(block).not.toContain("Let me check.");
+});

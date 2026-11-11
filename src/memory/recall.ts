@@ -16,6 +16,16 @@ export const ASSISTANT_TRIM = 2400;
 const MAX_LINES_PER_SESSION = 12;
 
 export type ResolvedDate = { phrase: string; day: string };
+
+/**
+ * Words too common in questions to say what a conversation was about. Ignored for topic matching only;
+ * fetch ranking still uses them ("price" matters on a pricing page).
+ */
+const GENERIC = new Set(("ask asked tell told check checked update updated change changed changes compare comparison " +
+  "price prices pricing priced cost costs monthly month year plan plans current currently latest today still since " +
+  "version new best good cheap cheaper free per question answer correct right now earlier before").split(" "));
+
+const topicWords = (s: string) => tokenize(s).filter((t) => !GENERIC.has(t));
 export type RecalledSession = { meta: SessionMeta; day: string; lines: string[]; matchedBy: "date" | "topic" };
 export type RecallResult = { dates: ResolvedDate[]; sessions: RecalledSession[]; claims: Claim[]; missingDays: string[]; inThisSession: string[] };
 
@@ -35,26 +45,35 @@ function textOf(m: StoredMessage): string {
   return m.msg.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("").trim();
 }
 
+/** An old answer as the model should see it now: no diff block, no citation numbers from that turn. */
+function cleanAnswer(text: string): string {
+  const fence = text.indexOf("```json-diff");
+  return (fence >= 0 ? text.slice(0, fence) : text).replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, "").trim();
+}
+
 function renderLines(messages: StoredMessage[]): string[] {
+  // Each turn's final answer carries its clean prose in meta; intermediate rounds ("Let me check.") are skipped.
+  const hasMeta = messages.some((m) => m.meta);
   const lines: string[] = [];
   for (const m of messages) {
-    const t = textOf(m);
-    if (!t || m.msg.role === "system") continue;
-    if (m.msg.role === "user") lines.push(`user: ${t}`);
-    else lines.push(`assistant: ${t.length > ASSISTANT_TRIM ? t.slice(0, ASSISTANT_TRIM) + " …[trimmed]" : t}`);
+    if (m.msg.role === "system") continue;
+    if (m.msg.role === "user") { const t = textOf(m); if (t) lines.push(`user: ${t}`); continue; }
+    if (hasMeta && !m.meta) continue;
+    const t = cleanAnswer(m.meta?.text ?? textOf(m));
+    if (t) lines.push(`assistant: ${t.length > ASSISTANT_TRIM ? t.slice(0, ASSISTANT_TRIM) + " …[trimmed]" : t}`);
   }
   return lines.slice(-MAX_LINES_PER_SESSION);
 }
 
 function overlap(a: Set<string>, text: string): number {
   let n = 0;
-  for (const t of new Set(tokenize(text))) if (a.has(t)) n++;
+  for (const t of new Set(topicWords(text))) if (a.has(t)) n++;
   return n;
 }
 
 export function recall(store: MemoryStore, text: string, now: Date, exclude: { sessionId: string }): RecallResult {
   const dates = resolveDates(text, now);
-  const words = new Set(tokenize(text));
+  const words = new Set(topicWords(text));
   const sessions: RecalledSession[] = [];
   const missingDays: string[] = [];
   const inThisSession: string[] = [];

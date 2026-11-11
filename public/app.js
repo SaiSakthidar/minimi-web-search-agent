@@ -36,8 +36,11 @@ function inline(text, turnId, known) {
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s = s.replace(/\[(\d{1,2})\]/g, (m, n) =>
-    known.has(Number(n)) ? `<a class="cite" href="#src-${turnId}-${n}" data-src="src-${turnId}-${n}">${n}</a>` : `<span class="cite">${n}</span>`);
+  // [3], [3][4] and [3, 4] all become one marker per source.
+  s = s.replace(/\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\]/g, (m, list) => list.split(",").map((x) => {
+    const n = x.trim();
+    return known.has(Number(n)) ? `<a class="cite" href="#src-${turnId}-${n}" data-src="src-${turnId}-${n}">${n}</a>` : `<span class="cite">${n}</span>`;
+  }).join(""));
   return s;
 }
 

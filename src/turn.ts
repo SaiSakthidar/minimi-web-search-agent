@@ -30,9 +30,9 @@ export function recallSummary(r: RecallResult): string | null {
   return bits.length ? bits.join(" · ") : null;
 }
 
-/** Sources the answer actually cites, by [n] in the prose or a diff row. */
+/** Sources the answer actually cites, by [n], [n][m] or [n, m] in the prose, or by a diff row. */
 export function citedSources(result: Pick<TurnResult, "text" | "diff" | "sources">): SourceRef[] {
-  const ids = new Set([...result.text.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])));
+  const ids = new Set([...result.text.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)].flatMap((m) => m[1].split(",").map((n) => Number(n.trim()))));
   for (const d of result.diff ?? []) if (d.source !== null) ids.add(d.source);
   return result.sources.filter((s) => ids.has(s.id));
 }
