@@ -80,12 +80,56 @@ const toBottom = (force) => { if (force || nearBottom()) scroller.scrollTop = sc
 
 async function loadMeta() {
   state.meta = await api("/api/meta");
-  const real = new Date().toISOString().slice(0, 10) === state.meta.nowIso.slice(0, 10);
-  $("meta").replaceChildren(
-    el("span", { class: `chip${real ? "" : " override"}`, title: real ? "" : "Clock override is active" },
-      `today is ${fmtDay(state.meta.today, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}`),
-    el("span", { class: "chip model" }, state.meta.model),
-  );
+  const real = Math.abs(Date.now() - Date.parse(state.meta.nowIso)) < 60_000;
+  const today = $("today");
+  today.textContent = fmtDay(state.meta.today, { weekday: "long", day: "numeric", month: "long" });
+  today.classList.toggle("override", !real);
+  today.title = real ? "Today's date, used for every search and memory lookup" : "The clock is set to another day (AGENT_NOW)";
+  $("model").textContent = state.meta.model;
+}
+
+// ---------- theme: system -> Latte -> Mocha ----------
+
+const THEMES = ["system", "latte", "mocha"];
+const THEME_ICON = {
+  system: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>',
+  latte: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  mocha: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="currentColor"/></svg>',
+};
+const THEME_LABEL = { system: "Theme: follows your system", latte: "Theme: Latte (light)", mocha: "Theme: Mocha (dark)" };
+
+function currentTheme() { return document.documentElement.dataset.theme || "system"; }
+function applyTheme(t) {
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  try { t === "system" ? localStorage.removeItem("minimi-theme") : localStorage.setItem("minimi-theme", t); } catch {}
+  const btn = $("theme");
+  btn.innerHTML = THEME_ICON[t];
+  btn.title = THEME_LABEL[t];
+  btn.setAttribute("aria-label", `${THEME_LABEL[t]}. Switch theme`);
+}
+
+// ---------- relative dates ----------
+
+const DAY_MS = 86_400_000;
+const dayNumber = (day) => Math.floor(Date.parse(`${day.slice(0, 10)}T12:00:00Z`) / DAY_MS);
+const daysAgo = (day) => (state.meta ? dayNumber(state.meta.today) - dayNumber(day) : 0);
+const localDay = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+
+function sessionGroup(startedAt) {
+  const n = daysAgo(localDay(startedAt));
+  if (n <= 0) return "Today";
+  if (n === 1) return "Yesterday";
+  if (n < 7) return "This week";
+  return "Earlier";
+}
+
+/** How old a source is, as a word for the card and a bucket for its colour. */
+function freshness(publishedDate) {
+  if (!publishedDate) return { bucket: "none", label: "no date on page" };
+  const n = daysAgo(publishedDate);
+  const label = n <= 0 ? "today" : n === 1 ? "yesterday" : n < 60 ? `${n} days old` : n < 730 ? `${Math.round(n / 30)} months old` : `${Math.round(n / 365)} years old`;
+  return { bucket: n <= 7 ? "week" : n <= 90 ? "quarter" : "old", label: `${fmtDay(publishedDate, { day: "numeric", month: "short" })}, ${label}` };
 }
 
 async function loadSessions() {
@@ -94,7 +138,7 @@ async function loadSessions() {
   nav.replaceChildren();
   let lastGroup = "";
   for (const s of state.sessions) {
-    const group = fmtDay(s.startedAt.slice(0, 10) === state.meta?.today ? state.meta.today : s.startedAt, { month: "long", year: "numeric" });
+    const group = sessionGroup(s.startedAt);
     if (group !== lastGroup) { nav.append(el("div", { class: "group" }, group)); lastGroup = group; }
     nav.append(el("a", {
       href: `#${s.id}`, class: s.id === state.current ? "active" : null,
@@ -115,7 +159,7 @@ const closeDrawer = () => { $("sidebar").classList.remove("open"); $("scrim").cl
 function renderEmpty() {
   thread.replaceChildren(el("div", { class: "empty" },
     el("h1", {}, "What should we look up?"),
-    el("div", {}, "Answers cite dated sources. Earlier conversations are remembered and re-checked."),
+    el("p", {}, "Every answer cites its sources and shows how old they are. Ask about something we discussed before and it gets checked again."),
     el("div", { class: "examples" }, EXAMPLES.map((q) => el("button", { type: "button", onclick: () => { input.value = q; send(); } }, q))),
   ));
 }
@@ -167,13 +211,17 @@ class TurnView {
   setSources(sources) {
     this.sources = sources;
     this.sourcesEl.hidden = sources.length === 0;
-    this.sourcesEl.replaceChildren(...sources.map((s) => el("a", {
-      class: "source", id: `src-${this.id}-${s.id}`, href: s.url, target: "_blank", rel: "noopener", title: s.url,
-    },
-      el("div", { class: "dom" }, el("span", { class: "n" }, s.id), host(s.url)),
-      el("div", { class: "t" }, s.title),
-      el("div", { class: `d${s.publishedDate ? "" : " undated"}` }, s.publishedDate ? fmtDay(s.publishedDate) : "undated"),
-    )));
+    this.sourcesEl.replaceChildren(...sources.map((s) => {
+      const f = freshness(s.publishedDate);
+      return el("a", {
+        class: "source", id: `src-${this.id}-${s.id}`, href: /^https?:\/\//.test(s.url) ? s.url : "#",
+        target: "_blank", rel: "noopener", title: s.url, "data-fresh": f.bucket,
+      },
+        el("div", { class: "dom" }, el("span", { class: "n" }, s.id), el("span", {}, host(s.url))),
+        el("div", { class: "t" }, s.title),
+        el("div", { class: "age" }, f.label),
+      );
+    }));
     this.paint();
   }
 
@@ -182,12 +230,12 @@ class TurnView {
     const val = (v, d) => [v ?? "—", d ? el("span", { class: "sub" }, fmtDay(d)) : null];
     this.diffEl.hidden = false;
     this.diffEl.replaceChildren(el("table", {},
-      el("thead", {}, el("tr", {}, ["Item", "Before", "Today", "Verdict"].map((h) => el("th", {}, h)))),
+      el("thead", {}, el("tr", {}, ["What", "Before", "Now", "Result"].map((h) => el("th", {}, h)))),
       el("tbody", {}, items.map((it) => el("tr", {},
         el("td", {}, it.item),
         el("td", {}, val(it.before, it.beforeDate)),
         el("td", {}, val(it.after, it.afterDate)),
-        el("td", {}, el("span", { class: `verdict ${it.verdict}` }, it.verdict),
+        el("td", {}, el("span", { class: `verdict ${it.verdict}` }, { changed: "Changed", same: "Same", unverified: "Not confirmed" }[it.verdict] ?? it.verdict),
           it.source ? el("a", { class: "cite", href: `#src-${this.id}-${it.source}`, "data-src": `src-${this.id}-${it.source}` }, it.source) : null),
       ))),
     ));
@@ -303,6 +351,8 @@ input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey 
 input.addEventListener("input", autosize);
 $("new-session").addEventListener("click", () => { state.current = null; history.replaceState(null, "", "#"); loadSessions(); renderEmpty(); closeDrawer(); input.focus(); });
 $("menu").addEventListener("click", openDrawer);
+$("theme").addEventListener("click", () => applyTheme(THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length]));
+applyTheme(currentTheme());
 $("scrim").addEventListener("click", closeDrawer);
 
 (async function init() {

@@ -28,7 +28,7 @@ export function recallSummary(r: RecallResult): string | null {
   else if (r.sessions.length > 1) bits.push(`recalled ${r.sessions.length} sessions (${r.sessions.map((s) => shortDay(s.day)).join(", ")})`);
   if (r.claims.length) bits.push(`${r.claims.length} earlier claim${r.claims.length > 1 ? "s" : ""}`);
   for (const d of r.missingDays) bits.push(`no record for ${shortDay(d)}`);
-  return bits.length ? bits.join(" · ") : null;
+  return bits.length ? bits.join(", ") : null;
 }
 
 /** Sources the answer actually cites, by [n], [n][m] or [n, m] in the prose, or by a diff row. */
