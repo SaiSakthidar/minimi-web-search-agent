@@ -93,3 +93,12 @@ it("a judge failure keeps the answer and timings and leaves only the grade empty
   expect(rows[0].error).toBeUndefined();
   expect(rows[0].rounds).toBe(1);
 });
+
+it("tells the judge the assistant has memory, so recalled sessions are not marked as invented", async () => {
+  const store = await MemoryStore.open(dir);
+  const provider = fakeProvider([{ text: "On 3 Nov you asked about laptops." }, { json: { title: "t", topics: [], claims: [] } }]);
+  const judge = fakeProvider([{ json: { correct: true, cited: true, notes: "ok" } }]);
+  await runEval({ provider, search, store, judge }, [{ id: "mem", text: "What did I ask on 3 November?", needsSearch: false, expects: ["recalls it"] }]);
+  expect(judge.jsonCalls[0].system).toMatch(/memory of earlier conversations/i);
+  expect(judge.jsonCalls[0].system).toMatch(/not.*(penali[sz]e|count against)/i);
+});

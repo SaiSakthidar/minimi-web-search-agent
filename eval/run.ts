@@ -38,6 +38,13 @@ const JUDGE_SCHEMA = {
   additionalProperties: false,
 };
 
+const JUDGE_SYSTEM =
+  "You grade answers from a research chat assistant. The assistant has persistent memory of earlier conversations: " +
+  "before each question it is shown what was asked and answered on earlier days, so statements about earlier " +
+  "conversations are recalled, not invented, and must not count against it. Grade only against the expectations " +
+  "and the cited sources. Be strict about facts about the world: each needs a [n] citation and must not contradict " +
+  "its source. Questions about the assistant itself, greetings and arithmetic need no citations.";
+
 export async function runEval(
   deps: { provider: LlmProvider; search: SearchProvider; store: MemoryStore; embedder?: Embedder; judge?: LlmProvider },
   questions: Question[], log: (s: string) => void = () => {},
@@ -62,7 +69,7 @@ export async function runEval(
       const sources = result.cited.map((s) => `[${s.id}] ${s.title} (${s.url}, ${s.publishedDate ?? "undated"})`).join("\n") || "(none)";
       try {
         const verdict = await judge.completeJson<{ correct: boolean; cited: boolean; notes: string }>({
-          system: "You grade answers from a research chat assistant. Be strict about citations and about invented facts. Today is " + now().toISOString().slice(0, 10) + ".",
+          system: JUDGE_SYSTEM + " Today is " + now().toISOString().slice(0, 10) + ".",
           prompt: `Question:\n${q.text}\n\nExpectations:\n- ${q.expects.join("\n- ")}\n\nAnswer:\n${result.text}\n\nCited sources:\n${sources}`,
           schema: JUDGE_SCHEMA,
         });
