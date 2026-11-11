@@ -1,4 +1,4 @@
-# minimi
+# minimi web search
 
 A chat agent with one capability, web search, that remembers earlier conversations and re-checks what it said before. Ask "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?" and it recalls that session, searches each price again, and shows what changed with dated sources.
 
