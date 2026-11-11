@@ -58,6 +58,24 @@ export function mapStop(reason: string | null): StopReason {
   }
 }
 
+/**
+ * Two cache breakpoints: the frozen system prompt, and a top-level marker that caches the whole conversation
+ * up to its last block, so each new round of a long session pays only for what was added.
+ */
+export function buildStreamParams(req: StreamRequest, model: string): MessageCreateParamsStreaming {
+  return {
+    model,
+    max_tokens: 16000,
+    stream: true,
+    cache_control: { type: "ephemeral" },
+    system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
+    thinking: { type: "adaptive" },
+    output_config: { effort: req.effort },
+    tools: toAnthropicTools(req.tools),
+    messages: toAnthropicMessages(req.messages),
+  };
+}
+
 export class AnthropicProvider implements LlmProvider {
   readonly name = "anthropic" as const;
   readonly modelLabel: string;
@@ -74,16 +92,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async *stream(req: StreamRequest): AsyncIterable<LlmEvent> {
-    const params: MessageCreateParamsStreaming = {
-      model: this.chatModel,
-      max_tokens: 16000,
-      stream: true,
-      system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
-      thinking: { type: "adaptive" },
-      output_config: { effort: req.effort },
-      tools: toAnthropicTools(req.tools),
-      messages: toAnthropicMessages(req.messages),
-    };
+    const params = buildStreamParams(req, this.chatModel);
     let stream = this.open(params, req.signal);
     let started = false;
     try {

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { afterLastFallback, mapStop, toAnthropicMessages, toAnthropicTools } from "../../src/llm/anthropic.ts";
+import { afterLastFallback, buildStreamParams, mapStop, toAnthropicMessages, toAnthropicTools } from "../../src/llm/anthropic.ts";
 import { fetchTool } from "../../src/tools/fetch.ts";
 import { searchTool } from "../../src/tools/search.ts";
 
@@ -81,4 +81,11 @@ it("strict tool schemas use no keywords strict mode rejects", () => {
   };
   for (const t of toAnthropicTools([searchTool(provider).spec, fetchTool(provider).spec])) if (t.strict) walk(t.input_schema, t.name);
   expect(found).toEqual([]);
+});
+
+it("caches the growing conversation, not only the system prompt", () => {
+  const p = buildStreamParams({ system: "sys", messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }], tools: [], effort: "medium" }, "claude-opus-5-5");
+  expect(p.cache_control).toEqual({ type: "ephemeral" });
+  expect(p.system).toEqual([{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }]);
+  expect(p).toMatchObject({ model: "claude-opus-5-5", stream: true, thinking: { type: "adaptive" }, output_config: { effort: "medium" } });
 });

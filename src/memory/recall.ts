@@ -92,7 +92,9 @@ export const SEMANTIC_LEAD = 0.11;
 const EMBED_TIMEOUT_MS = 1500;
 
 async function semanticMatches(embedder: Embedder, query: string, labels: string[], timeoutMs: number): Promise<Map<string, number>> {
-  const uniq = [...new Set(labels.filter(Boolean))];
+  // A bare name ("netlify") embeds as a generic topic and scores high against any question in its field;
+  // names are matched exactly by the keyword ranking instead.
+  const uniq = [...new Set(labels.filter((l) => l.trim().split(/\s+/).length >= 2))];
   if (!uniq.length) return new Map();
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -115,7 +117,17 @@ async function semanticMatches(embedder: Embedder, query: string, labels: string
   }
 }
 
-const sessionLabel = (m: SessionMeta) => [m.title, m.topics.join(", ")].filter(Boolean).join(" · ");
+/**
+ * What a session is about, as short labels for embedding: the title and each topic separately, with generic
+ * words removed ("CRM Pricing Comparison for Sales Team" -> "crm sales"), so one noisy topic or a phrase
+ * like "pricing comparison" cannot dominate the match. A session scores as its best label.
+ */
+export function sessionLabels(m: SessionMeta): string[] {
+  const clean = (s: string) => topicWords(s).join(" ");
+  return [...new Set([clean(m.title), ...m.topics.map(clean)].filter(Boolean))];
+}
+
+const claimLabel = (c: Claim) => topicWords(c.subject).join(" ") || c.subject;
 
 export async function recall(
   store: MemoryStore, text: string, now: Date, exclude: { sessionId: string },
@@ -151,20 +163,22 @@ export async function recall(
   const candidates = store.listSessions().filter((m) => m.id !== exclude.sessionId && !taken.has(m.id));
   const allClaims = store.claims();
   const semantic = embedder
-    ? await semanticMatches(embedder, text, [...candidates.map(sessionLabel), ...allClaims.map((c) => c.subject)], opts.timeoutMs ?? EMBED_TIMEOUT_MS)
+    ? await semanticMatches(embedder, text, [...candidates.flatMap(sessionLabels), ...allClaims.map(claimLabel)], opts.timeoutMs ?? EMBED_TIMEOUT_MS)
     : new Map<string, number>();
+  const sessionScore = (m: SessionMeta) => Math.max(-Infinity, ...sessionLabels(m).map((l) => semantic.get(l) ?? -Infinity));
 
   const keywordSessions = candidates // newest first, so a stable sort breaks ties by recency
     .map((meta) => {
-      const firstUser = store.getMessages(meta.id).find((m) => m.msg.role === "user" && textOf(m));
+      // Title and topics say what a session is about; its first question only stands in until it has a title.
+      const firstUser = meta.title ? undefined : store.getMessages(meta.id).find((m) => m.msg.role === "user" && textOf(m));
       return { id: meta.id, score: overlap(words, [meta.title, ...meta.topics, firstUser ? textOf(firstUser) : ""].join(" ")) };
     })
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .map((x) => x.id);
   const semanticSessions = candidates
-    .filter((m) => semantic.has(sessionLabel(m)))
-    .sort((a, b) => semantic.get(sessionLabel(b))! - semantic.get(sessionLabel(a))!)
+    .filter((m) => sessionScore(m) > -Infinity)
+    .sort((a, b) => sessionScore(b) - sessionScore(a))
     .map((m) => m.id);
   for (const id of fuseRankings([keywordSessions, semanticSessions])) {
     if (sessions.length >= MAX_SESSIONS) break;
@@ -177,16 +191,19 @@ export async function recall(
   const onDay = allClaims.filter((c) => matchedDays.has(c.observedAt.slice(0, 10)));
   const rest = allClaims.filter((c) => !onDay.includes(c));
   const keywordClaims = rest
-    .map((c) => ({ c, score: overlap(words, `${c.subject} ${c.predicate}`) }))
+    .map((c) => ({ c, score: overlap(words, c.subject) })) // the subject says what a fact is about; its attribute ("billed annually") does not
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score || b.c.observedAt.localeCompare(a.c.observedAt))
     .map((x) => x.c.id);
   const semanticClaims = rest
-    .filter((c) => semantic.has(c.subject))
-    .sort((a, b) => semantic.get(b.subject)! - semantic.get(a.subject)! || b.observedAt.localeCompare(a.observedAt))
+    .filter((c) => semantic.has(claimLabel(c)))
+    .sort((a, b) => semantic.get(claimLabel(b))! - semantic.get(claimLabel(a))! || b.observedAt.localeCompare(a.observedAt))
     .map((c) => c.id);
+  // A recalled conversation brings its own facts: those are what an "anything changed?" question re-checks.
+  const recalledIds = new Set(sessions.slice(0, MAX_SESSIONS).map((x) => x.meta.id));
+  const fromSessions = rest.filter((c) => recalledIds.has(c.sessionId)).map((c) => c.id);
   const byId = new Map(rest.map((c) => [c.id, c]));
-  const byTopic = fuseRankings([keywordClaims, semanticClaims]).map((id) => byId.get(id)!);
+  const byTopic = [...new Set([...fromSessions, ...fuseRankings([keywordClaims, semanticClaims])])].map((id) => byId.get(id)!);
 
   return { dates, sessions: sessions.slice(0, MAX_SESSIONS), claims: [...onDay, ...byTopic].slice(0, MAX_CLAIMS), missingDays, inThisSession };
 }

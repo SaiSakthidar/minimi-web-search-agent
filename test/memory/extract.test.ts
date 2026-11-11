@@ -69,3 +69,9 @@ it("a provider error does not reject scheduleExtraction and is logged", async ()
   expect(logged).toHaveLength(1);
   expect(store.claims()).toHaveLength(0);
 });
+
+it("asks for topics from what the user asked about, not everything the answer mentions", async () => {
+  const provider = fakeProvider([{ json }]);
+  await extractTurn(provider, input());
+  expect(provider.jsonCalls[0].system).toMatch(/topics.*user asked about/i);
+});

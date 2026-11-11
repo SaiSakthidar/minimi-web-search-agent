@@ -42,7 +42,8 @@ type Extracted = { title?: string; topics?: string[]; claims?: { subject?: strin
 const SYSTEM =
   "You extract structured memory from one turn of a research chat. Record only facts the assistant stated WITH a " +
   "citation marker [n]; ignore uncited statements, opinions, and anything the user said. One claim per fact. Keep " +
-  "subjects specific and consistently named. Return JSON matching the schema.";
+  "subjects specific and consistently named. For topics, list only the products, vendors or subjects the user asked " +
+  "about in their message, not everything the answer happens to mention. Return JSON matching the schema.";
 
 export async function extractTurn(provider: LlmProvider, input: ExtractInput): Promise<{ title?: string; topics: string[]; claims: ClaimInput[] }> {
   if (input.sources.length === 0 && !input.isFirstTurn) return { topics: [], claims: [] };

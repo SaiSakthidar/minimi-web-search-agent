@@ -16,7 +16,18 @@ const DESCRIPTION =
 
 const day = (d?: string) => (d ? d.slice(0, 10) : null);
 
-export function prepareResults(raw: RawResult[], startId: number): { sources: SourceRef[]; rendered: string } {
+const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
+
+/** The name a site is registered under: neon.com -> neon, blog.hubspot.com -> hubspot, www.ocado.co.uk -> ocado. */
+export function siteName(url: string): string {
+  const labels = new URL(url).hostname.toLowerCase().split(".");
+  const n = labels.length;
+  if (n >= 3 && labels[n - 1].length === 2 && SECOND_LEVEL.has(labels[n - 2])) return labels[n - 3];
+  return labels[n - 2] ?? labels[0];
+}
+
+export function prepareResults(raw: RawResult[], startId: number, query = ""): { sources: SourceRef[]; rendered: string } {
+  const named = new Set(tokenize(query));
   const seen: string[] = [];
   const unique = raw.filter((r) => {
     const key = [...new Set(tokenize(r.title ?? ""))].sort().join(" ") || r.url; // no usable title words: never a duplicate
@@ -39,7 +50,8 @@ export function prepareResults(raw: RawResult[], startId: number): { sources: So
     const s: SourceRef = { id: startId + i, title: r.title?.trim() || new URL(r.url).hostname, url: r.url, publishedDate: day(r.publishedDate) };
     sources.push(s);
     const hl = r.highlights.slice(0, MAX_HIGHLIGHTS).map((h) => `- ${h.replace(/\s+/g, " ").trim().slice(0, HIGHLIGHT_CHARS)}`);
-    blocks.push([`[${s.id}] ${s.title}`, `url: ${s.url}`, `date: ${s.publishedDate ?? "undated"}`, ...hl].join("\n"));
+    const official = named.has(siteName(s.url)) ? ["official site"] : [];
+    blocks.push([`[${s.id}] ${s.title}`, `url: ${s.url}`, `date: ${s.publishedDate ?? "undated"}`, ...official, ...hl].join("\n"));
   });
   return { sources, rendered: blocks.join("\n\n") };
 }
@@ -77,7 +89,7 @@ export function searchTool(provider: SearchProvider): ToolHandler {
         return { isError: true, content: `Search failed: ${(e as Error).message}. Try a different query or answer with what you have.` };
       }
       if (raw.length === 0) return { content: `No results for "${query}"${after ? ` published after ${after}` : ""}.` };
-      const { sources, rendered } = prepareResults(raw, ctx.sources.length + 1);
+      const { sources, rendered } = prepareResults(raw, ctx.sources.length + 1, query);
       ctx.sources.push(...sources);
       return { content: rendered };
     },

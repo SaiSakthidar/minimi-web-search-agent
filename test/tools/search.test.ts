@@ -86,3 +86,19 @@ it("says so when there are no results", async () => {
   const out = await searchTool(fakeSearch([[]])).run({ query: "zzz" }, newTurnContext());
   expect(out.content).toMatch(/No results/);
 });
+
+it("tags a result as the official site when its domain name is a product named in the query", () => {
+  const { rendered } = prepareResults([
+    r("Neon pricing", "https://neon.com/pricing", "2026-11-01"),
+    r("Neon vs Supabase", "https://neon-vs-supabase.com/compare", "2026-11-02"),
+    r("HubSpot Sales Hub pricing", "https://blog.hubspot.com/sales/pricing", "2026-11-03"),
+    r("Supabase pricing", "https://supabase.com/pricing", "2026-11-04"),
+    r("Ocado prices", "https://www.ocado.co.uk/prices", "2026-11-05"),
+  ], 1, "Neon and HubSpot and Ocado pricing");
+  const block = (url: string) => rendered.split("\n\n").find((b) => b.includes(url))!;
+  expect(block("neon.com/pricing")).toContain("official site");
+  expect(block("blog.hubspot.com")).toContain("official site");
+  expect(block("ocado.co.uk")).toContain("official site");
+  expect(block("neon-vs-supabase.com")).not.toContain("official site");
+  expect(block("supabase.com")).not.toContain("official site");
+});

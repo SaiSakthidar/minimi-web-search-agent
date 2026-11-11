@@ -4,7 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { runTurn, type TurnEvent, type TurnResult } from "./agent/loop.ts";
-import { pickEffort, systemPrompt } from "./agent/prompt.ts";
+import { pickEffort, systemPrompt, type DiffItem } from "./agent/prompt.ts";
 import { now } from "./clock.ts";
 import type { LlmProvider, Msg } from "./llm/types.ts";
 import { scheduleExtraction } from "./memory/extract.ts";
@@ -38,6 +38,15 @@ export function citedSources(result: Pick<TurnResult, "text" | "diff" | "sources
   return result.sources.filter((s) => ids.has(s.id));
 }
 
+/**
+ * A "before" value can only come from memory. When recall found nothing, any before value the model wrote was
+ * invented (for example taken from a source's date), so it is blanked and the verdict becomes unverified.
+ */
+export function withoutUnrecalledBefore(items: DiffItem[] | null, recalled: boolean): DiffItem[] | null {
+  if (!items || recalled) return items;
+  return items.map((it) => (it.before === null && it.beforeDate === null ? it : { ...it, before: null, beforeDate: null, verdict: "unverified" }));
+}
+
 export async function handleTurn(deps: TurnDeps, sessionId: string, text: string, onEvent: (e: HandleEvent) => void, signal?: AbortSignal): Promise<TurnResult & { cited: SourceRef[] }> {
   const { store, provider } = deps;
   const session = store.getSession(sessionId);
@@ -48,7 +57,9 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
   const r = await recall(store, text, at, { sessionId }, deps.embedder);
   const block = formatRecall(r, at);
   const summary = recallSummary(r);
+  const recalled = r.sessions.length > 0 || r.claims.length > 0;
   onEvent({ type: "recall", block, summary });
+  const forward = (e: HandleEvent) => onEvent(e.type === "diff" ? { ...e, items: withoutUnrecalledBefore(e.items, recalled)! } : e);
 
   // The recall note goes after the user message: a mid-conversation system message must follow a user turn.
   const userMsg: Msg = { role: "user", parts: [{ type: "text", text }] };
@@ -63,7 +74,7 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
       history: store.getMessages(sessionId).map((m) => m.msg),
       tools: deps.tools,
       effort: pickEffort(text),
-      onEvent,
+      onEvent: forward,
       signal,
     });
   } catch (e) {
@@ -74,6 +85,7 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
     throw e;
   }
 
+  result = { ...result, diff: withoutUnrecalledBefore(result.diff, recalled) };
   const cited = citedSources(result);
   onEvent({ type: "sources", sources: cited });
   for (const [i, m] of result.newMessages.entries()) {

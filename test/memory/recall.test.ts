@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { formatRecall, fuseRankings, recall, resolveDates, tokenize } from "../../src/memory/recall.ts";
+import { formatRecall, fuseRankings, recall, resolveDates, sessionLabels, tokenize } from "../../src/memory/recall.ts";
 import type { Embedder } from "../../src/memory/embed.ts";
 import { MemoryStore } from "../../src/memory/store.ts";
 import type { ClaimInput } from "../../src/memory/types.ts";
@@ -160,13 +160,23 @@ it("recalls the clean final answer without diff blocks, old citation numbers or 
  * (database, sales, laptop) plus a shared background dimension, then L2-normalised.
  */
 const CONCEPTS: [RegExp, number][] = [[/postgres|database|supabase|neon/i, 0], [/crm|sales|hubspot/i, 1], [/laptop|notebook|macbook/i, 2]];
+/** Each word also lands in one of 16 hashed buckets, so unrelated texts never share an identical vector. */
+function hashedWords(t: string): number[] {
+  const v = new Array(16).fill(0);
+  for (const w of t.toLowerCase().split(/[^a-z0-9]+/).filter((x) => x.length > 2)) {
+    let h = 0;
+    for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    v[h % 16] += 0.3;
+  }
+  return v;
+}
 const fakeEmbedder = (onCall?: () => Promise<void>): Embedder => ({
   id: "fake",
   async embed(texts) {
     await onCall?.();
     return texts.map((t) => {
-      const v = [0, 0, 0, 0.5];
-      for (const [re, d] of CONCEPTS) if (re.test(t)) v[d] = 1;
+      const v = [0, 0, 0, 0.3, ...hashedWords(t)];
+      for (const [re, d] of CONCEPTS) if (re.test(t)) v[d] = 3;
       const n = Math.hypot(...v);
       return v.map((x) => x / n);
     });
@@ -174,11 +184,11 @@ const fakeEmbedder = (onCall?: () => Promise<void>): Embedder => ({
 });
 
 async function threeSessions() {
-  await session("2026-11-05", "Managed Postgres Entry Plans", ["postgres", "supabase"], [["Which Postgres host?", "Supabase Pro."]]);
-  await session("2026-11-06", "CRM shortlist", ["hubspot", "pipedrive"], [["Shortlist CRMs", "HubSpot."]]);
+  const pg = await session("2026-11-05", "Managed Postgres Entry Plans", ["postgres", "supabase"], [["Which Postgres host?", "Supabase Pro."]]);
+  const crm = await session("2026-11-06", "CRM shortlist", ["hubspot", "pipedrive"], [["Shortlist CRMs", "HubSpot."]]);
   await session("2026-11-07", "Travel laptops", ["macbook"], [["Laptop under 1500", "MacBook Air."]]);
-  await store.addClaim(claim({ subject: "Supabase Pro Plan" }));
-  await store.addClaim(claim({ subject: "HubSpot Sales Hub" }));
+  await store.addClaim(claim({ subject: "Supabase Pro Plan", sessionId: pg.id }));
+  await store.addClaim(claim({ subject: "HubSpot Sales Hub", sessionId: crm.id }));
 }
 
 it("finds a conversation by meaning when no keyword is shared", async () => {
@@ -211,4 +221,64 @@ it("falls back to keyword recall when the embedder fails or is slow", async () =
 it("reciprocal rank fusion puts items found by both rankings first", () => {
   expect(fuseRankings([["a", "b"], ["b", "c"]])).toEqual(["b", "a", "c"]);
   expect(fuseRankings([["a"], []])).toEqual(["a"]);
+});
+
+it("matches facts by subject only, never by attribute words", async () => {
+  await store.addClaim(claim({ subject: "Zoho CRM Professional", predicate: "per-seat monthly pricing billed annually", value: "$23" }));
+  await store.addClaim(claim({ subject: "Neon Launch plan", predicate: "billing model", value: "usage-based" }));
+  const r = await recall(store, "That serverless option you mentioned, is it still billed by usage?", now, { sessionId: "current" });
+  expect(r.claims).toEqual([]);
+  const neon = await recall(store, "Is Neon still billed by usage?", now, { sessionId: "current" });
+  expect(neon.claims.map((c) => c.subject)).toEqual(["Neon Launch plan"]);
+});
+
+it("embeds a session as its cleaned title plus each topic separately", () => {
+  const labels = sessionLabels({ id: "x", startedAt: "", seeded: false, title: "CRM Pricing Comparison for Sales Team", topics: ["hubspot", "database hosting", "pricing"] });
+  expect(labels).toEqual(["crm sales", "hubspot", "database hosting"]);
+});
+
+it("one matching topic is enough even when the other topics are noise", async () => {
+  await session("2026-11-05", "Vercel Pro vs Netlify Pro Pricing", ["vercel", "supabase", "neon", "database"], [["Compare Vercel and Netlify", "a"]]);
+  await session("2026-11-06", "Managed Postgres Hosting Comparison", ["postgres", "supabase"], [["Which Postgres host?", "b"]]);
+  await session("2026-11-07", "Travel laptops", ["macbook"], [["laptop", "c"]]);
+  const web: Embedder = {
+    id: "fake-web",
+    async embed(texts) {
+      return texts.map((t) => {
+        const v = [/postgres|database|supabase|neon/i.test(t) ? 1 : 0, /vercel|netlify|deploy|website/i.test(t) ? 1 : 0, /laptop|macbook/i.test(t) ? 1 : 0, 0.5];
+        const n = Math.hypot(...v);
+        return v.map((x) => x / n);
+      });
+    },
+  };
+  const r = await recall(store, "Which website deployment platform was cheaper?", now, { sessionId: "current" }, web);
+  expect(r.sessions.map((s) => s.meta.title)).toEqual(["Vercel Pro vs Netlify Pro Pricing"]);
+});
+
+it("leaves one-word labels (bare names) to keyword matching", async () => {
+  await session("2026-11-05", "Notes", ["vercel"], [["hello", "a"]]);
+  await session("2026-11-06", "Managed Postgres Hosting", ["postgres"], [["Which Postgres host?", "b"]]);
+  await session("2026-11-07", "Travel laptops", ["macbook"], [["laptop", "c"]]);
+  const web: Embedder = {
+    id: "fake-web",
+    async embed(texts) {
+      return texts.map((t) => {
+        const v = [/postgres|database/i.test(t) ? 3 : 0, /vercel|website|deploy/i.test(t) ? 3 : 0, /laptop|macbook/i.test(t) ? 3 : 0, 0.3, t.length % 7 / 10];
+        const n = Math.hypot(...v);
+        return v.map((x) => x / n);
+      });
+    },
+  };
+  const r = await recall(store, "Which website deployment option did we pick?", now, { sessionId: "current" }, web);
+  expect(r.sessions).toEqual([]);
+});
+
+it("matches titled sessions on title and topics, not on everyday words in their first question", async () => {
+  await session("2026-11-05", "Managed Postgres Hosting", ["postgres"], [["Which managed Postgres should a small team use?", "a"]]);
+  const r = await recall(store, "Remind me which tools my sales reps could use to track deals", now, { sessionId: "current" });
+  expect(r.sessions).toEqual([]);
+  const untitled = await store.createSession({ startedAt: local("2026-11-06"), seeded: false });
+  await store.appendMessage(untitled.id, user("Compare Pipedrive deal tracking"), local("2026-11-06"));
+  const r2 = await recall(store, "what did we say about pipedrive?", now, { sessionId: "current" });
+  expect(r2.sessions.map((s) => s.meta.id)).toEqual([untitled.id]);
 });
