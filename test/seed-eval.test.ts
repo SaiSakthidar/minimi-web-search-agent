@@ -83,3 +83,13 @@ it("runEval grades with a separate judge provider when one is given", async () =
   expect(judge.jsonCalls).toHaveLength(1);
   expect(provider.jsonCalls).toHaveLength(1); // only the memory extraction
 });
+
+it("a judge failure keeps the answer and timings and leaves only the grade empty", async () => {
+  const store = await MemoryStore.open(dir);
+  const provider = fakeProvider([{ text: "408." }, { json: { title: "t", topics: [], claims: [] } }]);
+  const judge = fakeProvider([{ error: new Error("judge overloaded") }]);
+  const rows = await runEval({ provider, search, store, judge }, [{ id: "math", text: "What is 17% of 2,400?", needsSearch: false, expects: ["408"] }]);
+  expect(rows[0]).toMatchObject({ answer: "408.", correct: null, cited: null, judgeError: "judge overloaded", searchedAsExpected: true });
+  expect(rows[0].error).toBeUndefined();
+  expect(rows[0].rounds).toBe(1);
+});

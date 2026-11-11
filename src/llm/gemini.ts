@@ -74,25 +74,32 @@ export class StepAccumulator {
 
 const THINKING = { low: "low", medium: "medium", high: "high" } as const;
 
-/** At most two retries, all within 20 s, so an overloaded model fails visibly instead of retrying for minutes. */
-const RETRIES = {
-  strategy: "attempt-count-backoff" as const,
-  maxRetries: 2,
-  backoff: { initialInterval: 1000, maxInterval: 8000, exponent: 2, maxElapsedTime: 20_000 },
-};
+/**
+ * The SDK's own retry re-sends a request body it has already consumed and fails with "TypeError: unusable",
+ * so it is off; overloads are retried here with a fresh call instead (two retries, a few seconds apart).
+ */
+const NO_SDK_RETRIES = { strategy: "none" as const };
+const RETRY_DELAYS_MS = [2000, 6000];
 const JSON_TIMEOUT_MS = 60_000;
 
 type InteractionsClient = Pick<GoogleGenAI, "interactions">;
 
 const OVERLOADED = /high demand|overloaded|service_unavailable|\b503\b|UNAVAILABLE/i;
 
-function explain(e: unknown, model: string): Error {
+const isOverloaded = (e: unknown) => {
   const err = e as { message?: string; status?: number };
-  if (err?.status === 503 || OVERLOADED.test(err?.message ?? "")) {
-    return new Error(`${model} is overloaded right now (Google returned 503). Try again in a minute, or set GEMINI_MODEL in .env to another model such as gemini-3.6-flash.`);
-  }
+  return err?.status === 503 || OVERLOADED.test(err?.message ?? "");
+};
+
+function explain(e: unknown, model: string): Error {
+  if (isOverloaded(e)) return new Error(`${model} is overloaded right now (Google returned 503). Try again in a minute, or choose another model with GEMINI_MODEL in .env.`);
   return e instanceof Error ? e : new Error(String(e));
 }
+
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
+});
 
 export class GeminiProvider implements LlmProvider {
   readonly name = "gemini" as const;
@@ -100,12 +107,25 @@ export class GeminiProvider implements LlmProvider {
   private ai: InteractionsClient;
   private model: string;
   private firstEventTimeoutMs: number;
+  private retryDelaysMs: number[];
 
-  constructor(opts: { apiKey: string; model?: string; client?: InteractionsClient; firstEventTimeoutMs?: number }) {
+  constructor(opts: { apiKey: string; model?: string; client?: InteractionsClient; firstEventTimeoutMs?: number; retryDelaysMs?: number[] }) {
     this.ai = opts.client ?? new GoogleGenAI({ apiKey: opts.apiKey });
     this.model = opts.model || "gemini-3.8-flash";
     this.modelLabel = this.model;
     this.firstEventTimeoutMs = opts.firstEventTimeoutMs ?? 45_000;
+    this.retryDelaysMs = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
+  }
+
+  /** Runs `call`, retrying with a fresh request while Google reports overload. */
+  private async withRetry<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try { return await call(); }
+      catch (e) {
+        if (!isOverloaded(e) || attempt >= this.retryDelaysMs.length || signal?.aborted) throw e;
+        await sleep(this.retryDelaysMs[attempt], signal);
+      }
+    }
   }
 
   /**
@@ -133,7 +153,7 @@ export class GeminiProvider implements LlmProvider {
   }
 
   private async *streamInner(req: StreamRequest, signal: AbortSignal, onFirstEvent: () => void): AsyncIterable<LlmEvent> {
-    const stream = await this.ai.interactions.create({
+    const stream = await this.withRetry(() => this.ai.interactions.create({
       model: this.model,
       input: toGeminiSteps(req.messages),
       system_instruction: req.system,
@@ -141,7 +161,7 @@ export class GeminiProvider implements LlmProvider {
       store: false,
       stream: true,
       generation_config: { thinking_level: THINKING[req.effort] },
-    }, { retries: RETRIES, fetch_options: { signal } });
+    }, { retries: NO_SDK_RETRIES, fetch_options: { signal } }), signal);
     const acc = new StepAccumulator();
     let status = "completed";
     for await (const ev of stream as AsyncIterable<AnyObj>) {
@@ -168,13 +188,13 @@ export class GeminiProvider implements LlmProvider {
   async completeJson<T>(req: JsonRequest): Promise<T> {
     let interaction;
     try {
-      interaction = await this.ai.interactions.create({
+      interaction = await this.withRetry(() => this.ai.interactions.create({
         model: this.model,
         input: req.prompt,
         system_instruction: req.system,
         store: false,
         response_format: { type: "text", mime_type: "application/json", schema: req.schema },
-      }, { retries: RETRIES, timeout_ms: JSON_TIMEOUT_MS });
+      }, { retries: NO_SDK_RETRIES, timeout_ms: JSON_TIMEOUT_MS }));
     } catch (e) {
       throw explain(e, this.model);
     }

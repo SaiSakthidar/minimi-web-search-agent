@@ -20,7 +20,11 @@ import { handleTurn } from "../src/turn.ts";
 export type Question = { id: string; text: string; needsSearch: boolean; expects: string[] };
 export type EvalRow = {
   id: string; firstTokenMs: number | null; totalMs: number; rounds: number; searches: number; fetches: number;
-  diff: boolean; searchedAsExpected: boolean; correct: boolean | null; cited: boolean | null; notes: string; answer: string; error?: string;
+  diff: boolean; searchedAsExpected: boolean; correct: boolean | null; cited: boolean | null; notes: string; answer: string;
+  /** The turn itself failed: no answer to grade. */
+  error?: string;
+  /** The answer exists but grading failed (e.g. the judge model was overloaded); correct/cited stay null. */
+  judgeError?: string;
 };
 
 const JUDGE_SCHEMA = {
@@ -56,19 +60,24 @@ export async function runEval(
       Object.assign(row, { totalMs: Math.round(performance.now() - t0), rounds: result.rounds, diff: !!result.diff, answer: result.text });
       await awaitExtractions();
       const sources = result.cited.map((s) => `[${s.id}] ${s.title} (${s.url}, ${s.publishedDate ?? "undated"})`).join("\n") || "(none)";
-      const verdict = await judge.completeJson<{ correct: boolean; cited: boolean; notes: string }>({
-        system: "You grade answers from a research chat assistant. Be strict about citations and about invented facts. Today is " + now().toISOString().slice(0, 10) + ".",
-        prompt: `Question:\n${q.text}\n\nExpectations:\n- ${q.expects.join("\n- ")}\n\nAnswer:\n${result.text}\n\nCited sources:\n${sources}`,
-        schema: JUDGE_SCHEMA,
-      });
-      Object.assign(row, verdict);
+      try {
+        const verdict = await judge.completeJson<{ correct: boolean; cited: boolean; notes: string }>({
+          system: "You grade answers from a research chat assistant. Be strict about citations and about invented facts. Today is " + now().toISOString().slice(0, 10) + ".",
+          prompt: `Question:\n${q.text}\n\nExpectations:\n- ${q.expects.join("\n- ")}\n\nAnswer:\n${result.text}\n\nCited sources:\n${sources}`,
+          schema: JUDGE_SCHEMA,
+        });
+        Object.assign(row, verdict);
+      } catch (e) {
+        row.judgeError = (e as Error).message; // keep the answer; only the grade is missing
+      }
     } catch (e) {
       row.totalMs = Math.round(performance.now() - t0);
       row.error = (e as Error).message;
     }
     Object.assign(row, { firstTokenMs, searches, fetches, searchedAsExpected: q.needsSearch === searches > 0 });
     rows.push(row);
-    log(`${q.id.padEnd(18)} ${row.error ? "ERROR " + row.error : `${row.correct ? "ok  " : "FAIL"} cited=${row.cited} searches=${searches} rounds=${row.rounds} ${row.totalMs}ms`}`);
+    const grade = row.judgeError ? "UNGRADED" : row.correct ? "ok  " : "FAIL";
+    log(`${q.id.padEnd(18)} ${row.error ? "ERROR " + row.error : `${grade} cited=${row.cited} searches=${searches} rounds=${row.rounds} first=${firstTokenMs}ms total=${row.totalMs}ms`}${row.judgeError ? `  (judge: ${row.judgeError})` : ""}`);
   }
   return rows;
 }
@@ -89,13 +98,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.log(`Running ${picked.length} questions on ${deps.provider.name} (${deps.provider.modelLabel}), judged by ${judge.modelLabel}\n`);
     await deps.embedder.warm().catch(() => {});
     const rows = await runEval({ ...deps, store, judge }, picked, console.log);
-    const n = rows.length || 1;
+    const graded = rows.filter((r) => !r.error && !r.judgeError);
+    const n = graded.length || 1;
     const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null);
     const summary = {
       provider: deps.provider.name, model: deps.provider.modelLabel, judge: judge.modelLabel, at: new Date().toISOString(),
-      correct: rows.filter((r) => r.correct).length / n,
-      cited: rows.filter((r) => r.cited).length / n,
-      searchedAsExpected: rows.filter((r) => r.searchedAsExpected).length / n,
+      questions: rows.length, answered: rows.filter((r) => !r.error).length, graded: graded.length,
+      correct: graded.filter((r) => r.correct).length / n,
+      cited: graded.filter((r) => r.cited).length / n,
+      searchedAsExpected: rows.filter((r) => !r.error && r.searchedAsExpected).length / (rows.filter((r) => !r.error).length || 1),
       medianFirstTokenMs: median(rows.flatMap((r) => (r.firstTokenMs === null ? [] : [r.firstTokenMs]))),
       medianTotalMs: median(rows.map((r) => r.totalMs)),
     };

@@ -80,15 +80,35 @@ it("fails with a clear error when Gemini sends nothing before the first-event ti
 
 it("turns an overload error into a message that says what to do", async () => {
   const { client } = fakeClient(async () => { throw Object.assign(new Error('{"error":{"message":"gemini-test is currently experiencing high demand","code":"service_unavailable"}}'), { status: 503 }); });
-  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any });
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any, retryDelaysMs: [1, 1] });
   await expect(drain(p.stream(req))).rejects.toThrow(/gemini-test is overloaded.*GEMINI_MODEL/);
   await expect(p.completeJson({ system: "s", prompt: "p", schema: {} })).rejects.toThrow(/overloaded/);
 });
 
-it("bounds retries and passes an abort signal on every request", async () => {
+it("turns off the SDK's own retries and passes an abort signal on every request", async () => {
   const { client, calls } = fakeClient(async () => ({ async *[Symbol.asyncIterator]() { yield { event_type: "interaction.completed", interaction: { status: "completed" } }; } }));
   const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any });
   await drain(p.stream(req));
-  expect(calls[0].opts.retries).toMatchObject({ strategy: "attempt-count-backoff", maxRetries: 2 });
+  expect(calls[0].opts.retries).toEqual({ strategy: "none" }); // its retry re-sends a used body ("TypeError: unusable")
   expect(calls[0].opts.fetch_options.signal).toBeInstanceOf(AbortSignal);
+});
+
+const overloaded = () => Object.assign(new Error("gemini-test is currently experiencing high demand"), { status: 503 });
+
+it("retries an overloaded request with a fresh call, then succeeds", async () => {
+  let n = 0;
+  const { client, calls } = fakeClient(async () => {
+    if (n++ === 0) throw overloaded();
+    return { output_text: '{"ok":true}', status: "completed" };
+  });
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any, retryDelaysMs: [1, 1] });
+  expect(await p.completeJson({ system: "s", prompt: "p", schema: {} })).toEqual({ ok: true });
+  expect(calls).toHaveLength(2);
+});
+
+it("does not retry errors other than overload", async () => {
+  const { client, calls } = fakeClient(async () => { throw Object.assign(new Error("API key not valid"), { status: 400 }); });
+  const p = new GeminiProvider({ apiKey: "k", model: "gemini-test", client: client as any, retryDelaysMs: [1, 1] });
+  await expect(p.completeJson({ system: "s", prompt: "p", schema: {} })).rejects.toThrow(/API key not valid/);
+  expect(calls).toHaveLength(1);
 });
