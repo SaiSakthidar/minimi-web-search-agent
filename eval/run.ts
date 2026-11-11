@@ -67,10 +67,15 @@ export async function runEval(
       Object.assign(row, { totalMs: Math.round(performance.now() - t0), rounds: result.rounds, diff: !!result.diff, answer: result.text });
       await awaitExtractions();
       const sources = result.cited.map((s) => `[${s.id}] ${s.title} (${s.url}, ${s.publishedDate ?? "undated"})`).join("\n") || "(none)";
+      // The UI shows "what changed" answers as a table beside the prose; the judge must see both.
+      const table = result.diff?.length
+        ? "\n\nTable shown with the answer (item: before (date) -> now (date), verdict, source):\n" +
+          result.diff.map((d) => `- ${d.item}: ${d.before ?? "unknown"} (${d.beforeDate ?? "-"}) -> ${d.after ?? "unknown"} (${d.afterDate ?? "-"}), ${d.verdict}, ${d.source ? `[${d.source}]` : "no source"}`).join("\n")
+        : "";
       try {
         const verdict = await judge.completeJson<{ correct: boolean; cited: boolean; notes: string }>({
           system: JUDGE_SYSTEM + " Today is " + now().toISOString().slice(0, 10) + ".",
-          prompt: `Question:\n${q.text}\n\nExpectations:\n- ${q.expects.join("\n- ")}\n\nAnswer:\n${result.text}\n\nCited sources:\n${sources}`,
+          prompt: `Question:\n${q.text}\n\nExpectations:\n- ${q.expects.join("\n- ")}\n\nAnswer:\n${result.text}${table}\n\nCited sources:\n${sources}`,
           schema: JUDGE_SCHEMA,
         });
         Object.assign(row, verdict);

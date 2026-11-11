@@ -102,3 +102,17 @@ it("tells the judge the assistant has memory, so recalled sessions are not marke
   expect(judge.jsonCalls[0].system).toMatch(/memory of earlier conversations/i);
   expect(judge.jsonCalls[0].system).toMatch(/not.*(penali[sz]e|count against)/i);
 });
+
+it("shows the judge the before/after table, not only the prose", async () => {
+  const store = await MemoryStore.open(dir);
+  const items = [{ item: "Neon Launch", before: "$19", beforeDate: "2026-11-03", after: "$24", afterDate: "2026-11-07", verdict: "changed", source: 1 }];
+  const provider = fakeProvider([
+    { toolCalls: [{ name: "web_search", input: { queries: ["neon pricing"] } }] },
+    { text: "Neon changed [1].\n\n```json-diff\n" + JSON.stringify({ items }) + "\n```" },
+    { json: { title: "t", topics: [], claims: [] } },
+  ]);
+  const judge = fakeProvider([{ json: { correct: true, cited: true, notes: "ok" } }]);
+  await runEval({ provider, search, store, judge }, [{ id: "d", text: "Has Neon changed?", needsSearch: true, expects: ["a table"] }]);
+  expect(judge.jsonCalls[0].prompt).toContain("Neon Launch");
+  expect(judge.jsonCalls[0].prompt).toContain("$24");
+});
