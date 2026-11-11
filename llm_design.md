@@ -20,7 +20,7 @@ Goals
 
 Non-goals
 - Multi-user auth, deployment, rate limiting.
-- Vector database, embeddings, knowledge graph, MCP, multi-agent orchestration, model fine-tuning.
+- Vector database, hosted embedding APIs, knowledge graph, MCP, multi-agent orchestration, model fine-tuning. (A small local embedding model is used for recall; see 4.2.)
 - Reading images. (PDFs are read by `fetch_url`; JavaScript-rendered pages fall back to Exa contents.)
 
 Anti-goals (would make this a failure even if it works)
@@ -76,7 +76,10 @@ Rules:
 The model never calls a memory tool. The harness builds a recall block and injects it as a mid-conversation system message (keeps the cached prefix stable).
 
 1. **Date resolution.** Parse relative and absolute dates in the user message with `chrono-node` against `clock.now()` ("last Tuesday", "on Monday", "3 November", "yesterday"). Each resolved date selects the messages whose `at` falls on that day, grouped by session. Matching on message timestamps, not session start, means one long conversation used across several days still answers "what did I ask on Monday".
-2. **Topic match.** Score every session by keyword overlap between the user message and the session's `title` + `topics` + first user message. Score claims by overlap with `subject` + `predicate`. Simple tokenised overlap; no embeddings.
+2. **Topic match, hybrid.** Two rankings fused with reciprocal rank fusion (k = 60):
+   - *Keyword:* overlap between the user message and each session's `title` + `topics` + first user message, and each claim's `subject` + `predicate`. Generic question words and plan-tier names ("compare", "price", "pro", "team") are ignored, so only names and subjects count.
+   - *Semantic:* a local embedding model (`bge-small-en-v1.5`, 33M params, ~34 MB, via Transformers.js, no key) embeds the question and short labels: session `title · topics` and claim `subject`. Full questions are not embedded, because question phrasing ("compare the monthly price of…") matches unrelated sessions. A label qualifies only if its cosine is >= 0.58 and leads the median of the other labels by >= 0.11, calibrated on real data: relevant matches led by >= 0.14, unrelated questions by <= 0.09.
+   - The model loads in the background at startup. If it is missing, still loading, or slower than 1.5 s, recall uses keywords alone. A turn is never blocked.
 3. **Assemble.** Up to 3 sessions (date-matched first, then topic-matched), each as: date, title, and the user turns plus a trimmed version of the assistant answers (first ~600 tokens each). Up to 20 claims, each as one line: `[observed 2026-11-03] HubSpot Starter price = $20/seat/mo (source, source date)`. Current claims and closed claims both shown, closed ones marked.
 4. If nothing matches, the recall block says so explicitly, so the model can tell the user "I have no record of a conversation on 3 November" rather than invent one.
 

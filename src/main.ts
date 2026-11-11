@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { selectProvider } from "./llm/select.ts";
+import { LocalEmbedder } from "./memory/embed.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { createApp } from "./server.ts";
 import { ExaProvider } from "./tools/exa.ts";
@@ -28,7 +29,14 @@ export async function boot() {
   if (!process.env.EXA_API_KEY) throw new Error("EXA_API_KEY is not set. Copy .env.example to .env and add it (free key at dashboard.exa.ai).");
   const search = new ExaProvider(process.env.EXA_API_KEY);
   const store = await MemoryStore.open(`${ROOT}data`);
-  return { provider, search, store };
+  // Semantic recall model: loads in the background (first run downloads ~34 MB); recall is keyword-only until then.
+  const embedder = new LocalEmbedder();
+  const t0 = Date.now();
+  embedder.warm().then(
+    () => console.log(`[recall] embedding model ready (${Date.now() - t0} ms)`),
+    (e) => console.warn(`[recall] embedding model unavailable, using keyword recall only: ${(e as Error).message}`),
+  );
+  return { provider, search, store, embedder };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

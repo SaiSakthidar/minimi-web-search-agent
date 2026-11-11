@@ -6,6 +6,7 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dayKey, now, setOverride } from "./clock.ts";
 import type { LlmProvider } from "./llm/types.ts";
+import type { Embedder } from "./memory/embed.ts";
 import type { MemoryStore } from "./memory/store.ts";
 import { fetchTool } from "./tools/fetch.ts";
 import { searchTool } from "./tools/search.ts";
@@ -36,7 +37,7 @@ async function readJson(req: IncomingMessage): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new HttpError(400, "Body must be JSON"); }
 }
 
-export function createApp(deps: { provider: LlmProvider; search: SearchProvider; store: MemoryStore }): Server {
+export function createApp(deps: { provider: LlmProvider; search: SearchProvider; store: MemoryStore; embedder?: Embedder }): Server {
   const { provider, store } = deps;
   const tools = [searchTool(deps.search), fetchTool(deps.search)]; // built once: the fetch cache spans turns
   const busy = new Set<string>();
@@ -54,7 +55,7 @@ export function createApp(deps: { provider: LlmProvider; search: SearchProvider;
     res.on("close", () => { if (!res.writableFinished) abort.abort(); });
     const started = Date.now();
     try {
-      await handleTurn({ provider, store, tools }, sessionId, text.trim(), (e: HandleEvent) => {
+      await handleTurn({ provider, store, tools, embedder: deps.embedder }, sessionId, text.trim(), (e: HandleEvent) => {
         const { type, ...data } = e;
         send(type, data);
       }, abort.signal);

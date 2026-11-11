@@ -11,7 +11,7 @@ npm run seed            # optional: three dated example sessions (needs the keys
 npm run dev             # http://localhost:3000
 ```
 
-Node 20 or newer. Keys:
+Node 20 or newer. The first start downloads a 34 MB embedding model into `.cache/models` for semantic recall; until it is ready, recall matches by keywords only. Keys:
 
 | Key | Needed | Where |
 | --- | --- | --- |

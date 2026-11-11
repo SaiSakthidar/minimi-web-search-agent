@@ -9,10 +9,11 @@ import { now } from "./clock.ts";
 import type { LlmProvider, Msg } from "./llm/types.ts";
 import { scheduleExtraction } from "./memory/extract.ts";
 import { formatRecall, recall, type RecallResult } from "./memory/recall.ts";
+import type { Embedder } from "./memory/embed.ts";
 import type { MemoryStore } from "./memory/store.ts";
 import type { SourceRef, ToolHandler } from "./tools/types.ts";
 
-export type TurnDeps = { provider: LlmProvider; store: MemoryStore; tools: ToolHandler[]; log?: (e: unknown) => void };
+export type TurnDeps = { provider: LlmProvider; store: MemoryStore; tools: ToolHandler[]; embedder?: Embedder; log?: (e: unknown) => void };
 
 export type HandleEvent =
   | TurnEvent
@@ -44,7 +45,7 @@ export async function handleTurn(deps: TurnDeps, sessionId: string, text: string
   const isFirstTurn = !session.title; // set by extraction after the first answered turn
 
   const at = now();
-  const r = recall(store, text, at, { sessionId });
+  const r = await recall(store, text, at, { sessionId }, deps.embedder);
   const block = formatRecall(r, at);
   const summary = recallSummary(r);
   onEvent({ type: "recall", block, summary });
