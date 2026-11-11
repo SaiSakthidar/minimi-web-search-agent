@@ -160,9 +160,47 @@ function renderEmpty() {
   thread.replaceChildren(el("div", { class: "empty" },
     el("h1", {}, "What should we look up?"),
     el("p", {}, "Every answer cites its sources and shows how old they are. Ask about something we discussed before and it gets checked again."),
-    el("div", { class: "examples" }, EXAMPLES.map((q) => el("button", { type: "button", onclick: () => { input.value = q; send(); } }, q))),
+    memoryTimeline(),
+    el("div", { class: "examples" }, EXAMPLES.map((q, i) => el("button", { type: "button", style: `--i:${i}`, onclick: () => { input.value = q; send(); } }, q))),
   ));
 }
+
+/** The last 14 days as a strip, one dot per conversation, so earlier work is visible and one click away. */
+function memoryTimeline() {
+  if (!state.meta) return null;
+  const DAYS = 14;
+  const byDay = new Map();
+  for (const s of state.sessions) {
+    const n = daysAgo(localDay(s.startedAt));
+    if (n >= 0 && n < DAYS) byDay.set(n, [...(byDay.get(n) ?? []), s]);
+  }
+  if (!byDay.size) return null;
+  const cols = [];
+  for (let n = DAYS - 1; n >= 0; n--) {
+    const day = new Date(Date.parse(`${state.meta.today}T12:00:00Z`) - n * DAY_MS).toISOString().slice(0, 10);
+    const label = fmtDay(day, { weekday: "short", day: "numeric" });
+    cols.push(el("div", { class: `tl-day${n === 0 ? " today" : ""}`, style: `--i:${DAYS - 1 - n}` },
+      el("div", { class: "tl-dots" }, (byDay.get(n) ?? []).map((s) => el("button", {
+        type: "button", class: `tl-dot${s.seeded ? " seeded" : ""}`, title: `${s.title || "New conversation"}, ${label}`,
+        "aria-label": `Open ${s.title || "conversation"} from ${label}`, onclick: () => openSession(s.id),
+      }))),
+      el("span", { class: "tl-label" }, n === 0 ? "today" : fmtDay(day, { day: "numeric" })),
+    ));
+  }
+  return el("div", { class: "timeline", role: "group", "aria-label": "Conversations in the last two weeks" },
+    el("div", { class: "tl-head" }, "Your last two weeks"), el("div", { class: "tl-track" }, cols));
+}
+
+/** Catppuccin's mascot, as a small loader: ears twitch, eyes blink, tail swishes. */
+const CAT_SVG = `<svg class="cat" viewBox="0 0 28 22" aria-hidden="true">
+  <path class="tail" d="M22 17c3 0 5-2 5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+  <path class="ear-l" d="M4 9 5.5 2 10 6.5z" fill="currentColor"/>
+  <path class="ear-r" d="M22 9 20.5 2 16 6.5z" fill="currentColor"/>
+  <ellipse cx="13" cy="13" rx="10" ry="8" fill="currentColor"/>
+  <ellipse class="eye" cx="9.3" cy="12.5" rx="1.4" ry="1.7" fill="var(--base)"/>
+  <ellipse class="eye" cx="16.7" cy="12.5" rx="1.4" ry="1.7" fill="var(--base)"/>
+  <path d="M12 15.6 13 16.4 14 15.6" fill="none" stroke="var(--base)" stroke-width="1" stroke-linecap="round"/>
+</svg>`;
 
 /** One assistant turn: recall chip, status, sources row, diff table, prose, footer. */
 class TurnView {
@@ -173,11 +211,14 @@ class TurnView {
     this.root = el("div", { class: "turn" });
     this.recallEl = el("div");
     this.statusEl = el("div", { class: "status", hidden: true });
+    this.traceEl = el("div", { class: "trace", hidden: true });
+    this.steps = [];
+    this.lastStepAt = 0;
     this.sourcesEl = el("div", { class: "sources", hidden: true });
     this.diffEl = el("div", { class: "diff", hidden: true });
     this.proseEl = el("div", { class: "prose" });
     this.footEl = el("div");
-    this.root.append(this.recallEl, this.statusEl, this.sourcesEl, this.diffEl, this.proseEl, this.footEl);
+    this.root.append(this.recallEl, this.statusEl, this.traceEl, this.sourcesEl, this.diffEl, this.proseEl, this.footEl);
     this.root.addEventListener("click", (e) => {
       const a = e.target.closest("a.cite");
       if (!a) return;
@@ -193,9 +234,51 @@ class TurnView {
     this.recallEl.replaceChildren(el("details", { class: "recall" }, el("summary", {}, summary), block ? el("pre", {}, block) : null));
   }
 
-  status(text) { this.statusEl.hidden = !text; this.statusEl.textContent = text || ""; }
+  status(text) {
+    this.statusEl.hidden = !text;
+    this.statusEl.classList.toggle("thinking", text === "Thinking");
+    if (text === "Thinking") this.statusEl.innerHTML = CAT_SVG + '<span>Thinking</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+    else this.statusEl.textContent = text || "";
+  }
+
+  /**
+   * One chip per search or page read. Calls that arrive together ran in parallel, so they spin together;
+   * a later call means the previous batch finished, so those chips get their check mark.
+   */
+  step(text) {
+    const m = /^(searching|reading): (.*?)(?: since (\d{4}-\d{2}-\d{2}))?$/.exec(text);
+    if (!m) { this.status(text); return; }
+    this.status("");
+    const now = performance.now();
+    if (now - this.lastStepAt > 400) this.finishSteps();
+    this.lastStepAt = now;
+    const kind = m[1] === "reading" ? "read" : "search";
+    const chip = el("span", { class: `step ${kind} running`, style: `--i:${this.steps.filter((x) => x.classList.contains("running")).length}` },
+      el("span", { class: "step-icon", "aria-hidden": "true" }),
+      el("span", { class: "step-text" }, m[2]),
+      m[3] ? el("span", { class: "step-since" }, `since ${fmtDay(m[3], { day: "numeric", month: "short" })}`) : null,
+    );
+    this.steps.push(chip);
+    this.traceEl.hidden = false;
+    this.traceEl.append(chip);
+    toBottom();
+  }
+
+  finishSteps() { for (const c of this.steps) c.classList.replace("running", "done"); }
+
+  /** After the answer: fold the chips into one line that still opens to show every query. */
+  collapseTrace() {
+    this.finishSteps();
+    if (!this.steps.length || this.traceEl.querySelector("details")) return;
+    const searches = this.steps.filter((c) => c.classList.contains("search")).length;
+    const reads = this.steps.length - searches;
+    const label = [searches ? `${searches} search${searches > 1 ? "es" : ""}` : "", reads ? `${reads} page${reads > 1 ? "s" : ""} read` : ""].filter(Boolean).join(", ");
+    const list = el("div", { class: "trace-list" }, this.steps);
+    this.traceEl.replaceChildren(el("details", { class: "trace-done" }, el("summary", {}, label), list));
+  }
 
   append(delta) {
+    if (!this.text) { this.status(""); this.finishSteps(); }
     this.text += delta;
     if (this.pending) return;
     this.pending = true;
@@ -211,11 +294,11 @@ class TurnView {
   setSources(sources) {
     this.sources = sources;
     this.sourcesEl.hidden = sources.length === 0;
-    this.sourcesEl.replaceChildren(...sources.map((s) => {
+    this.sourcesEl.replaceChildren(...sources.map((s, i) => {
       const f = freshness(s.publishedDate);
       return el("a", {
         class: "source", id: `src-${this.id}-${s.id}`, href: /^https?:\/\//.test(s.url) ? s.url : "#",
-        target: "_blank", rel: "noopener", title: s.url, "data-fresh": f.bucket,
+        target: "_blank", rel: "noopener", title: s.url, "data-fresh": f.bucket, style: `--i:${i}`,
       },
         el("div", { class: "dom" }, el("span", { class: "n" }, s.id), el("span", {}, host(s.url))),
         el("div", { class: "t" }, s.title),
@@ -227,13 +310,13 @@ class TurnView {
 
   setDiff(items) {
     if (!items?.length) return;
-    const val = (v, d) => [v ?? "—", d ? el("span", { class: "sub" }, fmtDay(d)) : null];
+    const val = (v, d, struck = false) => [struck && v ? el("span", { class: "strike" }, v) : v ?? "—", d ? el("span", { class: "sub" }, fmtDay(d)) : null];
     this.diffEl.hidden = false;
     this.diffEl.replaceChildren(el("table", {},
       el("thead", {}, el("tr", {}, ["What", "Before", "Now", "Result"].map((h) => el("th", {}, h)))),
-      el("tbody", {}, items.map((it) => el("tr", {},
+      el("tbody", {}, items.map((it, i) => el("tr", { style: `--i:${i}`, class: it.verdict },
         el("td", {}, it.item),
-        el("td", {}, val(it.before, it.beforeDate)),
+        el("td", { class: "before" }, val(it.before, it.beforeDate, it.verdict === "changed")),
         el("td", {}, val(it.after, it.afterDate)),
         el("td", {}, el("span", { class: `verdict ${it.verdict}` }, { changed: "Changed", same: "Same", unverified: "Not confirmed" }[it.verdict] ?? it.verdict),
           it.source ? el("a", { class: "cite", href: `#src-${this.id}-${it.source}`, "data-src": `src-${this.id}-${it.source}` }, it.source) : null),
@@ -242,7 +325,12 @@ class TurnView {
   }
 
   notice(text, error = false) { this.footEl.append(el("div", { class: `notice${error ? " error" : ""}` }, text)); }
-  done(ms) { this.status(""); this.paint(); if (ms) this.footEl.append(el("div", { class: "foot" }, `${(ms / 1000).toFixed(1)}s`)); }
+  done(ms) {
+    this.status("");
+    this.collapseTrace();
+    this.paint();
+    if (ms) this.footEl.append(el("div", { class: "foot" }, `Answered in ${(ms / 1000).toFixed(1)} s`));
+  }
 }
 
 async function openSession(id) {
@@ -293,9 +381,12 @@ async function readSse(res, onEvent) {
   }
 }
 
+const SEND_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor"/></svg>';
+
 function setRunning(controller) {
   state.running = controller;
-  sendBtn.textContent = controller ? "■" : "↑";
+  sendBtn.innerHTML = controller ? STOP_ICON : SEND_ICON;
   sendBtn.classList.toggle("stop", !!controller);
   sendBtn.setAttribute("aria-label", controller ? "Stop" : "Send");
 }
@@ -311,7 +402,7 @@ async function send() {
   thread.append(el("div", { class: "user" }, text));
   const view = new TurnView(`t${Date.now()}`);
   thread.append(view.root);
-  view.status("thinking…");
+  view.status("Thinking");
   toBottom(true);
 
   const controller = new AbortController();
@@ -323,8 +414,8 @@ async function send() {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
     await readSse(res, (event, data) => {
       if (event === "recall") view.recall(data.summary, data.block);
-      else if (event === "status") view.status(data.text);
-      else if (event === "text") { view.status(""); view.append(data.delta); }
+      else if (event === "status") view.step(data.text);
+      else if (event === "text") view.append(data.delta);
       else if (event === "diff") view.setDiff(data.items);
       else if (event === "sources") view.setSources(data.sources);
       else if (event === "notice") view.notice(data.text);
@@ -335,6 +426,7 @@ async function send() {
     view.notice(e.name === "AbortError" ? "Stopped." : `Something went wrong: ${e.message}`, e.name !== "AbortError");
   } finally {
     view.status("");
+    view.collapseTrace();
     view.paint();
     setRunning(null);
     loadSessions();
@@ -351,7 +443,16 @@ input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey 
 input.addEventListener("input", autosize);
 $("new-session").addEventListener("click", () => { state.current = null; history.replaceState(null, "", "#"); loadSessions(); renderEmpty(); closeDrawer(); input.focus(); });
 $("menu").addEventListener("click", openDrawer);
-$("theme").addEventListener("click", () => applyTheme(THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length]));
+$("theme").addEventListener("click", (e) => {
+  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!document.startViewTransition || reduce) { applyTheme(next); return; }
+  const r = e.currentTarget.getBoundingClientRect();
+  document.documentElement.style.setProperty("--vt-x", `${r.left + r.width / 2}px`);
+  document.documentElement.style.setProperty("--vt-y", `${r.top + r.height / 2}px`);
+  document.startViewTransition(() => applyTheme(next));
+});
+scroller.addEventListener("scroll", () => document.querySelector(".top").classList.toggle("scrolled", scroller.scrollTop > 4), { passive: true });
 applyTheme(currentTheme());
 $("scrim").addEventListener("click", closeDrawer);
 
